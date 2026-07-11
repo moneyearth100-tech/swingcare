@@ -27,6 +27,10 @@ import { useSwingRecorder } from '../hooks/useSwingRecorder';
 import { useSessionSyncRetryQueue } from '../hooks/useSyncOnForeground';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
 import {
+  isPoseEffectivelyAbsent,
+  LOW_LIGHT_AVG_VISIBILITY,
+} from '../lib/posePresence';
+import {
   buildSwingSession,
   saveSwingSessionLocalFirst,
   type StoredSwingSession,
@@ -36,13 +40,6 @@ import {
 const RECORD_BUTTON_GAP_IOS = 16;
 const RECORD_BUTTON_BOTTOM_ANDROID = 28;
 
-/**
- * 이 미만 visibility는 "사람 없음/미인식"으로 취급 (배너 2번).
- * 0.25~0.5는 사람은 있으나 흐릿함 → 저조도(배너 3번).
- */
-const POSE_ABSENT_VISIBILITY_THRESHOLD = 0.25;
-/** 저조도 경고 — 포즈가 잡힌 상태에서 평균 visibility 상한 (6장) */
-const LOW_LIGHT_VISIBILITY_THRESHOLD = 0.5;
 /** 포즈 미인식 경고까지 대기 (ms) */
 const POSE_LOST_WARN_MS = 2000;
 /** 상태바 아래 경고 배너 간격 */
@@ -88,18 +85,27 @@ export default function SwingCaptureScreen() {
 
   viewSizeRef.current = cameraSize;
 
-  const { onLandmark, isPoseDetected, frameCount, averageVisibility } =
-    usePoseLandmarks({
+  const {
+    onLandmark,
+    isPoseDetected,
+    frameCount,
+    averageVisibility,
+    rawLandmarks,
+  } = usePoseLandmarks({
       enableLogging: false,
       onRawFrameRef: appendRawFrameRef,
       displayPointsSV,
       viewSizeRef,
     });
 
-  /** landmarks 빈 배열 또는 전체 visibility가 너무 낮음 → 미인식 */
-  const isPoseAbsent =
-    !isPoseDetected ||
-    averageVisibility < POSE_ABSENT_VISIBILITY_THRESHOLD;
+  /**
+   * 미인식: 빈 landmarks 또는 몸통(어깨·엉덩이) visibility 부족.
+   * iOS 렌즈 가림은 저조도로 오인되기 쉬워 전체 평균 대신 핵심 관절을 본다.
+   */
+  const isPoseAbsent = isPoseEffectivelyAbsent(
+    rawLandmarks,
+    averageVisibility,
+  );
 
   useEffect(() => {
     if (!isPoseAbsent) {
@@ -127,9 +133,11 @@ export default function SwingCaptureScreen() {
     if (showPoseLostWarn && isPoseAbsent) {
       return 'pose_lost';
     }
+    // 사람은 잡히는데(몸통 OK) 전체 평균만 낮음 → 저조도
     if (
       !isPoseAbsent &&
-      averageVisibility < LOW_LIGHT_VISIBILITY_THRESHOLD
+      isPoseDetected &&
+      averageVisibility < LOW_LIGHT_AVG_VISIBILITY
     ) {
       return 'low_light';
     }
@@ -137,6 +145,7 @@ export default function SwingCaptureScreen() {
   }, [
     averageVisibility,
     isPoseAbsent,
+    isPoseDetected,
     isRecording,
     showPoseLostWarn,
   ]);

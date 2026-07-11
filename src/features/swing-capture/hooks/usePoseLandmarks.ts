@@ -1,6 +1,6 @@
 /** MediaPipe onLandmark 콜백 → 정규화·스무딩·상태 관리 */
 
-import { useCallback, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Platform } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 
@@ -16,6 +16,7 @@ import {
 } from '../lib/normalizeLandmarkEvent';
 import type { PoseLandmarks } from '../lib/landmarkTypes';
 import { LANDMARK_INDEX } from '../lib/landmarkTypes';
+import { isPoseEffectivelyAbsent } from '../lib/posePresence';
 import {
   createEmptyPackedPosePoints,
   packPosePoints,
@@ -27,6 +28,14 @@ const LOG_EVERY_N_FRAMES = 15;
 
 /** 상태바용 React setState 최소 간격 — SharedValue는 매 프레임 갱신 */
 const UI_STATE_MIN_INTERVAL_MS = 100;
+
+/**
+ * 유효 포즈 콜백이 이 시간 이상 없으면 스켈레톤·상태를 비운다.
+ * iOS는 사람 이탈 후 빈 landmarks 콜백 없이 콜백이 끊기는 경우가 많음.
+ */
+const POSE_STALE_CLEAR_MS = 400;
+/** 스텔니스 폴링 간격 */
+const POSE_STALE_POLL_MS = 100;
 
 /** TEMP: onLandmark 진단 로그 — 좌우/스키마 검증 완료 후 비활성 */
 const TEMP_LANDMARK_DIAGNOSTICS = false;
@@ -201,6 +210,8 @@ export function usePoseLandmarks(
   /** 시간 기반 EMA용 이전 콜백 시각 (performance.now) */
   const emaLastAtRef = useRef(0);
   const frameCountRef = useRef(0);
+  /** 마지막 "유효 포즈" 콜백 시각 — 스로틀과 무관하게 매 프레임 갱신 */
+  const lastValidPoseAtRef = useRef(0);
   const onRawFrameRefStable = useRef(onRawFrameRef);
   onRawFrameRefStable.current = onRawFrameRef;
   const displayPointsSVRef = useRef(displayPointsSV);
@@ -219,6 +230,35 @@ export function usePoseLandmarks(
   const parseMsSamplesRef = useRef<number[]>([]);
   const handlerMsSamplesRef = useRef<number[]>([]);
   const dtWindowIndexRef = useRef(0);
+
+  const clearPoseUi = useCallback(() => {
+    if (displayPointsSVRef.current) {
+      displayPointsSVRef.current.value = createEmptyPackedPosePoints();
+    }
+    smoothedPrevRef.current = null;
+    emaLastAtRef.current = 0;
+    lastValidPoseAtRef.current = 0;
+    lastUiStateAtRef.current = Date.now();
+    setRawLandmarks(null);
+    setLandmarks(null);
+    setAvgVisibility(0);
+    setLastUpdatedAtMs(null);
+  }, []);
+
+  // iOS: 사람 이탈 후 콜백 단절 → 마지막 스켈레톤이 남는 문제 방지
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const last = lastValidPoseAtRef.current;
+      if (last <= 0) {
+        return;
+      }
+      if (Date.now() - last < POSE_STALE_CLEAR_MS) {
+        return;
+      }
+      clearPoseUi();
+    }, POSE_STALE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [clearPoseUi]);
 
   const onLandmark = useCallback(
     (event: unknown) => {
@@ -339,19 +379,8 @@ export function usePoseLandmarks(
 
       const normalizedEvent = normalizeLandmarkEvent(eventForNormalize);
       if (!normalizedEvent?.landmarks?.length) {
-        if (displayPointsSVRef.current) {
-          displayPointsSVRef.current.value = createEmptyPackedPosePoints();
-        }
-        smoothedPrevRef.current = null;
-        emaLastAtRef.current = 0;
-        // 포즈 소실도 UI는 스로틀 — SharedValue는 즉시 비움
-        const nowClear = Date.now();
-        if (nowClear - lastUiStateAtRef.current >= UI_STATE_MIN_INTERVAL_MS) {
-          lastUiStateAtRef.current = nowClear;
-          setRawLandmarks(null);
-          setLandmarks(null);
-          setAvgVisibility(0);
-        }
+        // 포즈 소실은 즉시 UI/스켈레톤 클리어 (스로틀 적용 안 함)
+        clearPoseUi();
 
         // 포즈 미검출(landmarks:[])은 정상 — 파싱 실패만 드물게 로그
         if (enableLogging && typeof event === 'string') {
@@ -386,10 +415,24 @@ export function usePoseLandmarks(
 
       const poseLandmarks = normalizedEvent.landmarks;
       const frameSize = normalizedEvent.frameSize;
+      const visibility = averageVisibility(poseLandmarks);
+
+      // 사람 없음/저신뢰 프레임은 스켈레톤을 고스트로 남기지 않음
+      if (isPoseEffectivelyAbsent(poseLandmarks, visibility)) {
+        clearPoseUi();
+        if (TEMP_DT_DISTRIBUTION) {
+          const endedAt =
+            typeof performance !== 'undefined' ? performance.now() : Date.now();
+          handlerMsSamplesRef.current.push(endedAt - handlerStartedAt);
+        }
+        return;
+      }
+
+      // 유효 포즈 시각 — 스로틀과 무관 (스텔니스 클리어용)
+      lastValidPoseAtRef.current = Date.now();
 
       frameCountRef.current += 1;
       const nextCount = frameCountRef.current;
-      const visibility = averageVisibility(poseLandmarks);
 
       const nowEma =
         typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -488,7 +531,7 @@ export function usePoseLandmarks(
         handlerMsSamplesRef.current.push(endedAt - handlerStartedAt);
       }
     },
-    [enableLogging, smoothingTauMs],
+    [clearPoseUi, enableLogging, smoothingTauMs],
   );
 
   return {
