@@ -59,7 +59,7 @@ const TEMP_DT_SPIKE_MS = 120;
 const TEMP_DT_SPIKE_HARD_MS = 250;
 
 export interface UsePoseLandmarksOptions {
-  /** 실기기 디버그용. 기본 true (Step 2 검증). 이후 단계에서 끌 수 있음 */
+  /** 실기기 디버그용. 기본 false — 필요 시 호출부에서 true */
   enableLogging?: boolean;
   /** 시간 기반 EMA τ(ms). 미지정 시 iOS 80 / Android 35 */
   smoothingTauMs?: number;
@@ -190,7 +190,7 @@ export function usePoseLandmarks(
   options: UsePoseLandmarksOptions = {},
 ): UsePoseLandmarksResult {
   const {
-    enableLogging = true,
+    enableLogging = false,
     // Android 브릿지 지연 보정 — iOS τ는 유지
     smoothingTauMs = Platform.OS === 'android'
       ? SMOOTHING_EMA_TAU_MS_ANDROID
