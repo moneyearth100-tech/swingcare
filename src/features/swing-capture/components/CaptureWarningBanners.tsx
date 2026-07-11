@@ -1,42 +1,37 @@
 /**
- * 저조도·포즈 미인식 경고 배너 (캡처 화면 오버레이).
+ * 저조도·포즈 미인식 경고 배너.
+ * 우선순위: 포즈 미인식 > 저조도 (동시 표시 안 함).
  */
 
 import { StyleSheet, Text, View } from 'react-native';
 
+export type CaptureWarningKind = 'pose_lost' | 'low_light' | null;
+
 export interface CaptureWarningBannersProps {
-  showLowLight: boolean;
-  showPoseLost: boolean;
+  kind: CaptureWarningKind;
   /** statusBar 아래 여백용 */
   top: number;
 }
 
 export default function CaptureWarningBanners({
-  showLowLight,
-  showPoseLost,
+  kind,
   top,
 }: CaptureWarningBannersProps) {
-  if (!showLowLight && !showPoseLost) {
+  if (kind == null) {
     return null;
   }
 
+  const isPoseLost = kind === 'pose_lost';
+
   return (
     <View style={[styles.wrap, { top }]} pointerEvents="none">
-      {showLowLight ? (
-        <View style={[styles.banner, styles.lowLight]}>
-          <Text style={styles.text}>
-            조도가 낮아 자세 인식이 불안정할 수 있습니다. 밝은 곳으로 이동해
-            주세요.
-          </Text>
-        </View>
-      ) : null}
-      {showPoseLost ? (
-        <View style={[styles.banner, styles.poseLost]}>
-          <Text style={styles.text}>
-            포즈가 감지되지 않습니다. 카메라 각도를 조정해 주세요.
-          </Text>
-        </View>
-      ) : null}
+      <View style={[styles.banner, isPoseLost ? styles.poseLost : styles.lowLight]}>
+        <Text style={styles.text}>
+          {isPoseLost
+            ? '카메라 각도를 조정해주세요'
+            : '조명이 어두워요. 밝은 곳에서 다시 촬영해 주세요.'}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -46,7 +41,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 14,
     right: 14,
-    gap: 8,
     zIndex: 40,
   },
   banner: {

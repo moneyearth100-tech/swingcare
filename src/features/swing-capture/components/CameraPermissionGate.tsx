@@ -1,6 +1,6 @@
 /**
- * 카메라 권한 거부·미요청 시 안내 게이트.
- * 권한이 있을 때만 children(카메라)을 마운트한다.
+ * 카메라 권한 거부 시 캡처 화면 대신 안내 UI.
+ * CTA는 앱 설정으로 딥링크한다.
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
@@ -25,35 +25,33 @@ export default function CameraPermissionGate({
   const insets = useSafeAreaInsets();
   const { hasPermission, requestPermission, canRequestPermission } =
     useCameraPermission();
-  const [isRequesting, setIsRequesting] = useState(false);
+  const [didAutoRequest, setDidAutoRequest] = useState(false);
 
-  const tryRequest = useCallback(async () => {
-    if (!canRequestPermission || isRequesting) {
+  const openAppSettings = useCallback(() => {
+    void Linking.openSettings();
+  }, []);
+
+  // 최초 1회 시스템 권한 다이얼로그 (아직 미결정일 때)
+  useEffect(() => {
+    if (hasPermission || didAutoRequest || !canRequestPermission) {
       return;
     }
-    setIsRequesting(true);
-    try {
-      await requestPermission();
-    } finally {
-      setIsRequesting(false);
-    }
-  }, [canRequestPermission, isRequesting, requestPermission]);
+    setDidAutoRequest(true);
+    void requestPermission();
+  }, [canRequestPermission, didAutoRequest, hasPermission, requestPermission]);
 
-  useEffect(() => {
-    if (!hasPermission && canRequestPermission) {
-      void tryRequest();
-    }
-  }, [canRequestPermission, hasPermission, tryRequest]);
-
-  // 설정 앱에서 권한 켠 뒤 복귀 시 훅 status 갱신 유도
+  // 설정에서 권한 켠 뒤 복귀 시 — 미결정이면 재요청
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
-      if (next === 'active' && !hasPermission && canRequestPermission) {
-        void tryRequest();
+      if (next !== 'active' || hasPermission) {
+        return;
+      }
+      if (canRequestPermission) {
+        void requestPermission();
       }
     });
     return () => sub.remove();
-  }, [canRequestPermission, hasPermission, tryRequest]);
+  }, [canRequestPermission, hasPermission, requestPermission]);
 
   if (hasPermission) {
     return <>{children}</>;
@@ -66,32 +64,14 @@ export default function CameraPermissionGate({
         스윙 자세 안내를 위해 카메라 접근이 필요합니다. 권한이 꺼져 있으면 촬영을
         시작할 수 없습니다.
       </Text>
-      {canRequestPermission ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="카메라 권한 허용"
-          onPress={() => {
-            void tryRequest();
-          }}
-          style={styles.button}
-          disabled={isRequesting}
-        >
-          <Text style={styles.buttonText}>
-            {isRequesting ? '요청 중…' : '권한 허용하기'}
-          </Text>
-        </Pressable>
-      ) : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="설정 앱 열기"
-          onPress={() => {
-            void Linking.openSettings();
-          }}
-          style={styles.button}
-        >
-          <Text style={styles.buttonText}>설정에서 허용하기</Text>
-        </Pressable>
-      )}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="설정에서 카메라 권한 허용하기"
+        onPress={openAppSettings}
+        style={styles.button}
+      >
+        <Text style={styles.buttonText}>설정에서 카메라 권한 허용하기</Text>
+      </Pressable>
     </View>
   );
 }

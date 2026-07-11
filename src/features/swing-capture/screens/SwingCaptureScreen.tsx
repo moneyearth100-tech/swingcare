@@ -17,12 +17,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabInset } from '@/constants/theme';
 
 import CameraPermissionGate from '../components/CameraPermissionGate';
-import CaptureWarningBanners from '../components/CaptureWarningBanners';
+import CaptureWarningBanners, {
+  type CaptureWarningKind,
+} from '../components/CaptureWarningBanners';
 import SkeletonOverlay from '../components/SkeletonOverlay';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
-import { useSyncOnForeground } from '../hooks/useSyncOnForeground';
+import { useSessionSyncRetryQueue } from '../hooks/useSyncOnForeground';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
 import {
   buildSwingSession,
@@ -34,9 +36,14 @@ import {
 const RECORD_BUTTON_GAP_IOS = 16;
 const RECORD_BUTTON_BOTTOM_ANDROID = 28;
 
-/** 저조도 경고 — 랜드마크 평균 visibility 임계값 (6장) */
+/**
+ * 이 미만 visibility는 "사람 없음/미인식"으로 취급 (배너 2번).
+ * 0.25~0.5는 사람은 있으나 흐릿함 → 저조도(배너 3번).
+ */
+const POSE_ABSENT_VISIBILITY_THRESHOLD = 0.25;
+/** 저조도 경고 — 포즈가 잡힌 상태에서 평균 visibility 상한 (6장) */
 const LOW_LIGHT_VISIBILITY_THRESHOLD = 0.5;
-/** 포즈 미인식 경고까지 대기 (ms) (6장) */
+/** 포즈 미인식 경고까지 대기 (ms) */
 const POSE_LOST_WARN_MS = 2000;
 /** 상태바 아래 경고 배너 간격 */
 const WARNING_BANNER_GAP_BELOW_STATUS = 72;
@@ -59,7 +66,7 @@ export default function SwingCaptureScreen() {
   const [isSavingSession, setIsSavingSession] = useState(false);
   const [showPoseLostWarn, setShowPoseLostWarn] = useState(false);
 
-  useSyncOnForeground();
+  useSessionSyncRetryQueue();
 
   const {
     isRecording,
@@ -89,8 +96,13 @@ export default function SwingCaptureScreen() {
       viewSizeRef,
     });
 
+  /** landmarks 빈 배열 또는 전체 visibility가 너무 낮음 → 미인식 */
+  const isPoseAbsent =
+    !isPoseDetected ||
+    averageVisibility < POSE_ABSENT_VISIBILITY_THRESHOLD;
+
   useEffect(() => {
-    if (isPoseDetected) {
+    if (!isPoseAbsent) {
       poseLostSinceRef.current = null;
       setShowPoseLostWarn(false);
       return;
@@ -105,10 +117,29 @@ export default function SwingCaptureScreen() {
       }
     }, 250);
     return () => clearInterval(timer);
-  }, [isPoseDetected]);
+  }, [isPoseAbsent]);
 
-  const showLowLight =
-    isPoseDetected && averageVisibility < LOW_LIGHT_VISIBILITY_THRESHOLD;
+  const warningKind: CaptureWarningKind = useMemo(() => {
+    if (isRecording) {
+      return null;
+    }
+    // 우선순위: 미인식(2) > 저조도(3) — 동시 표시 안 함
+    if (showPoseLostWarn && isPoseAbsent) {
+      return 'pose_lost';
+    }
+    if (
+      !isPoseAbsent &&
+      averageVisibility < LOW_LIGHT_VISIBILITY_THRESHOLD
+    ) {
+      return 'low_light';
+    }
+    return null;
+  }, [
+    averageVisibility,
+    isPoseAbsent,
+    isRecording,
+    showPoseLostWarn,
+  ]);
 
   const recordButtonBottom = useMemo(() => {
     if (Platform.OS === 'ios') {
@@ -247,8 +278,7 @@ export default function SwingCaptureScreen() {
 
         <CaptureWarningBanners
           top={insets.top + 12 + WARNING_BANNER_GAP_BELOW_STATUS}
-          showLowLight={showLowLight}
-          showPoseLost={showPoseLostWarn && !isRecording}
+          kind={warningKind}
         />
 
         <Pressable

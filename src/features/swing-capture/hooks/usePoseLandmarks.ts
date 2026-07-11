@@ -350,6 +350,7 @@ export function usePoseLandmarks(
           lastUiStateAtRef.current = nowClear;
           setRawLandmarks(null);
           setLandmarks(null);
+          setAvgVisibility(0);
         }
 
         // 포즈 미검출(landmarks:[])은 정상 — 파싱 실패만 드물게 로그
