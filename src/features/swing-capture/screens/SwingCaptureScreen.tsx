@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabInset } from '@/constants/theme';
 
 import SkeletonOverlay from '../components/SkeletonOverlay';
+import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
@@ -26,7 +27,7 @@ const RECORD_BUTTON_GAP_IOS = 16;
 const RECORD_BUTTON_BOTTOM_ANDROID = 28;
 
 /**
- * Step 3+4: Skia 스켈레톤 오버레이 + 녹화 버퍼.
+ * Step 3–5: Skia 스켈레톤 + 녹화 버퍼 + 종료 시 8단계 구간 분할.
  * thinksys 네이티브 뼈대 오버레이는 body-part props=false로 끈다.
  *
  * 실기기(Dev Client)에서만 카메라/포즈가 동작한다.
@@ -46,6 +47,9 @@ export default function SwingCaptureScreen() {
     stopRecording,
     appendRawFrameRef,
   } = useSwingRecorder();
+
+  const { phases, warning: phaseWarning, segment, clear: clearPhases } =
+    usePhaseSegmentation();
 
   const cameraSize = useMemo(() => {
     const width = Math.floor(windowWidth);
@@ -69,11 +73,26 @@ export default function SwingCaptureScreen() {
     return RECORD_BUTTON_BOTTOM_ANDROID;
   }, [insets.bottom]);
 
+  const phaseSummary = useMemo(() => {
+    if (phases.length === 0) {
+      return null;
+    }
+    const detected = phases.filter((p) => p.source === 'detected').length;
+    const interpolated = phases.filter((p) => p.source === 'interpolated').length;
+    return `구간 ${phases.length} (탐지 ${detected} · 보간 ${interpolated})`;
+  }, [phases]);
+
   const handleRecordPress = () => {
     if (isRecording) {
-      stopRecording();
+      const result = stopRecording();
+      if (result && result.frames.length > 0) {
+        segment(result.frames);
+      } else {
+        clearPhases();
+      }
       return;
     }
+    clearPhases();
     startRecording();
   };
 
@@ -140,8 +159,10 @@ export default function SwingCaptureScreen() {
         </Text>
         <Text style={styles.statusSub}>
           {lastResult
-            ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms (원본 버퍼, 저장 미연결)`
-            : 'Skia 스켈레톤 · 하단 버튼으로 녹화'}
+            ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms${
+                phaseSummary ? ` · ${phaseSummary}` : ''
+              }${phaseWarning ? ` · ${phaseWarning}` : ''}`
+            : 'Skia 스켈레톤 · 녹화 종료 시 8단계 구간 분할'}
         </Text>
       </View>
 
