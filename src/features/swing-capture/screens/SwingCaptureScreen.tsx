@@ -20,6 +20,7 @@ import CameraPermissionGate from '../components/CameraPermissionGate';
 import CaptureWarningBanners, {
   type CaptureWarningKind,
 } from '../components/CaptureWarningBanners';
+import PhaseTimeline from '../components/PhaseTimeline';
 import SkeletonOverlay from '../components/SkeletonOverlay';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
@@ -283,6 +284,9 @@ export default function SwingCaptureScreen() {
                   }${phaseWarning ? ` · ${phaseWarning}` : ''}`
                 : 'Skia 스켈레톤 · 녹화 종료 시 구간 분할·로컬 저장'}
           </Text>
+          {!isRecording && phases.length > 0 ? (
+            <PhaseTimeline phases={phases} />
+          ) : null}
         </View>
 
         <CaptureWarningBanners
