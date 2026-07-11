@@ -1,8 +1,8 @@
-/** 카메라 프리뷰 + MediaPipe 포즈 + 스윙 녹화 버퍼 (Step 4) */
+/** 카메라 프리뷰 + MediaPipe 포즈 + Skia 스켈레톤 + 스윙 녹화 버퍼 */
 
 import { RNMediapipe } from '@thinksys/react-native-mediapipe';
 import * as Device from 'expo-device';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import {
   Platform,
   Pressable,
@@ -11,20 +11,23 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset } from '@/constants/theme';
 
+import SkeletonOverlay from '../components/SkeletonOverlay';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
+import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
 
 /** 탭바 위 녹화 버튼 여백 (iOS만 탭바와 겹침 보정) */
 const RECORD_BUTTON_GAP_IOS = 16;
 const RECORD_BUTTON_BOTTOM_ANDROID = 28;
 
 /**
- * Step 4: 녹화 시작/종료 + 원본 LandmarkFrame 버퍼링.
- * 스켈레톤 Skia·구간분할·세션 저장은 이후 단계.
+ * Step 3+4: Skia 스켈레톤 오버레이 + 녹화 버퍼.
+ * thinksys 네이티브 뼈대 오버레이는 body-part props=false로 끈다.
  *
  * 실기기(Dev Client)에서만 카메라/포즈가 동작한다.
  * iOS 시뮬레이터에는 카메라가 없다.
@@ -32,6 +35,8 @@ const RECORD_BUTTON_BOTTOM_ANDROID = 28;
 export default function SwingCaptureScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const displayPointsSV = useSharedValue(createEmptyPackedPosePoints());
+  const viewSizeRef = useRef({ width: 0, height: 0 });
 
   const {
     isRecording,
@@ -42,18 +47,21 @@ export default function SwingCaptureScreen() {
     appendRawFrameRef,
   } = useSwingRecorder();
 
-  const { onLandmark, isPoseDetected, frameCount, averageVisibility } =
-    usePoseLandmarks({
-      enableLogging: true,
-      onRawFrameRef: appendRawFrameRef,
-    });
-
   const cameraSize = useMemo(() => {
     const width = Math.floor(windowWidth);
     const height = Math.floor(windowHeight - insets.top - insets.bottom);
     return { width, height };
   }, [insets.bottom, insets.top, windowHeight, windowWidth]);
 
+  viewSizeRef.current = cameraSize;
+
+  const { onLandmark, isPoseDetected, frameCount, averageVisibility } =
+    usePoseLandmarks({
+      enableLogging: false,
+      onRawFrameRef: appendRawFrameRef,
+      displayPointsSV,
+      viewSizeRef,
+    });
   const recordButtonBottom = useMemo(() => {
     if (Platform.OS === 'ios') {
       return insets.bottom + BottomTabInset + RECORD_BUTTON_GAP_IOS;
@@ -95,23 +103,31 @@ export default function SwingCaptureScreen() {
 
   return (
     <View style={styles.root}>
-      <RNMediapipe
-        width={cameraSize.width}
-        height={cameraSize.height}
-        face
-        leftArm
-        rightArm
-        leftWrist
-        rightWrist
-        torso
-        leftLeg
-        rightLeg
-        leftAnkle
-        rightAnkle
-        frameLimit={30}
-        onLandmark={onLandmark}
-        style={styles.camera}
-      />
+      <View style={[styles.cameraWrap, cameraSize]}>
+        <RNMediapipe
+          width={cameraSize.width}
+          height={cameraSize.height}
+          // thinksys 내장 스켈레톤 OFF — Skia SkeletonOverlay로 대체
+          face={false}
+          leftArm={false}
+          rightArm={false}
+          leftWrist={false}
+          rightWrist={false}
+          torso={false}
+          leftLeg={false}
+          rightLeg={false}
+          leftAnkle={false}
+          rightAnkle={false}
+          frameLimit={30}
+          onLandmark={onLandmark}
+          style={styles.camera}
+        />
+        <SkeletonOverlay
+          pointsSV={displayPointsSV}
+          width={cameraSize.width}
+          height={cameraSize.height}
+        />
+      </View>
 
       <View style={[styles.statusBar, { top: insets.top + 12 }]} pointerEvents="none">
         <Text style={styles.statusText}>
@@ -125,7 +141,7 @@ export default function SwingCaptureScreen() {
         <Text style={styles.statusSub}>
           {lastResult
             ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms (원본 버퍼, 저장 미연결)`
-            : '하단 버튼으로 녹화 시작 → 스윙 → 종료'}
+            : 'Skia 스켈레톤 · 하단 버튼으로 녹화'}
         </Text>
       </View>
 
@@ -151,6 +167,10 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: '#16171F',
+  },
+  cameraWrap: {
+    position: 'relative',
+    overflow: 'hidden',
   },
   camera: {
     flex: 1,
@@ -183,6 +203,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.18)',
     paddingHorizontal: 14,
     paddingVertical: 11,
+    zIndex: 30,
   },
   statusText: {
     color: '#fff',

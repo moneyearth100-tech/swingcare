@@ -18,6 +18,16 @@ interface LandmarkEventPayload {
   additionalData?: unknown;
 }
 
+export interface LandmarkFrameSize {
+  width: number;
+  height: number;
+}
+
+export interface NormalizedLandmarkEvent {
+  landmarks: PoseLandmarks;
+  frameSize: LandmarkFrameSize | null;
+}
+
 function toFiniteNumber(value: unknown, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -56,6 +66,19 @@ function parsePayload(event: unknown): LandmarkEventPayload | null {
   return null;
 }
 
+function parseFrameSize(additionalData: unknown): LandmarkFrameSize | null {
+  if (!additionalData || typeof additionalData !== 'object') {
+    return null;
+  }
+  const data = additionalData as { width?: unknown; height?: unknown };
+  const width = toFiniteNumber(data.width, 0);
+  const height = toFiniteNumber(data.height, 0);
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return { width, height };
+}
+
 function normalizePoint(raw: RawLandmark): Landmark {
   return {
     x: toFiniteNumber(raw.x, 0),
@@ -66,10 +89,12 @@ function normalizePoint(raw: RawLandmark): Landmark {
 }
 
 /**
- * MediaPipe 콜백 → 길이 최대 33의 PoseLandmarks.
- * 파싱 실패 또는 landmarks 비어 있으면 null.
+ * MediaPipe 콜백 → PoseLandmarks + 입력 프레임 크기(additionalData).
+ * landmarks가 비어 있으면 null.
  */
-export function normalizeLandmarkEvent(event: unknown): PoseLandmarks | null {
+export function normalizeLandmarkEvent(
+  event: unknown,
+): NormalizedLandmarkEvent | null {
   const payload = parsePayload(event);
   if (!payload || !Array.isArray(payload.landmarks)) {
     return null;
@@ -91,14 +116,20 @@ export function normalizeLandmarkEvent(event: unknown): PoseLandmarks | null {
     points.push(normalizePoint(item as RawLandmark));
   }
 
-  return points;
+  return {
+    landmarks: points,
+    frameSize: parseFrameSize(payload.additionalData),
+  };
 }
 
 /** 평균 visibility (저조도 경고 등에 사용) */
 export function averageVisibility(landmarks: PoseLandmarks): number {
-  if (landmarks.length === 0) {
+  if (!Array.isArray(landmarks) || landmarks.length === 0) {
     return 0;
   }
-  const sum = landmarks.reduce((acc, point) => acc + point.visibility, 0);
+  let sum = 0;
+  for (const point of landmarks) {
+    sum += point?.visibility ?? 0;
+  }
   return sum / landmarks.length;
 }
