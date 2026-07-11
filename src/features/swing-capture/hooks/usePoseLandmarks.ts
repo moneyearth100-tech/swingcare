@@ -1,6 +1,6 @@
 /** MediaPipe onLandmark 콜백 → 정규화·스무딩·상태 관리 */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, type MutableRefObject } from 'react';
 
 import {
   pushLandmarkHistory,
@@ -20,6 +20,11 @@ export interface UsePoseLandmarksOptions {
   /** 실기기 디버그용. 기본 true (Step 2 검증). 이후 단계에서 끌 수 있음 */
   enableLogging?: boolean;
   smoothingWindowSize?: number;
+  /**
+   * 녹화 버퍼용 원본 프레임 콜백 ref.
+   * ref로 받아 onLandmark 재생성·무거운 클로저를 피한다 (5.2절).
+   */
+  onRawFrameRef?: MutableRefObject<((landmarks: PoseLandmarks) => void) | null>;
 }
 
 export interface UsePoseLandmarksResult {
@@ -36,16 +41,19 @@ export interface UsePoseLandmarksResult {
 }
 
 /**
- * 콜백에서는 상태 업데이트만 수행한다.
- * 구간 분할·저장 등 무거운 작업은 넣지 말 것 (5.2절).
+ * 콜백에서는 정규화·상태 업데이트·(녹화 중이면) ref 버퍼 push만 수행한다.
+ * 구간 분할·세션 저장 등 무거운 작업은 넣지 말 것 (5.2절).
  *
  * 실기기에서만 카메라/포즈가 동작한다. 시뮬레이터에서는 콜백이 오지 않는다.
  */
 export function usePoseLandmarks(
   options: UsePoseLandmarksOptions = {},
 ): UsePoseLandmarksResult {
-  const { enableLogging = true, smoothingWindowSize = SMOOTHING_WINDOW_SIZE } =
-    options;
+  const {
+    enableLogging = true,
+    smoothingWindowSize = SMOOTHING_WINDOW_SIZE,
+    onRawFrameRef,
+  } = options;
 
   const [rawLandmarks, setRawLandmarks] = useState<PoseLandmarks | null>(null);
   const [landmarks, setLandmarks] = useState<PoseLandmarks | null>(null);
@@ -55,13 +63,31 @@ export function usePoseLandmarks(
 
   const historyRef = useRef<PoseLandmarks[]>([]);
   const frameCountRef = useRef(0);
+  const onRawFrameRefStable = useRef(onRawFrameRef);
+  onRawFrameRefStable.current = onRawFrameRef;
 
   const onLandmark = useCallback(
     (event: unknown) => {
       const normalized = normalizeLandmarkEvent(event);
       if (!normalized) {
-        if (enableLogging) {
-          console.log('[usePoseLandmarks] empty/unparsed landmark event', {
+        // 포즈 미검출(landmarks:[])은 정상 — 파싱 실패만 드물게 로그
+        if (enableLogging && typeof event === 'string') {
+          try {
+            const parsed: unknown = JSON.parse(event);
+            if (
+              parsed &&
+              typeof parsed === 'object' &&
+              Array.isArray((parsed as { landmarks?: unknown }).landmarks) &&
+              (parsed as { landmarks: unknown[] }).landmarks.length === 0
+            ) {
+              return;
+            }
+          } catch {
+            // fall through to log
+          }
+        }
+        if (enableLogging && frameCountRef.current % LOG_EVERY_N_FRAMES === 0) {
+          console.log('[usePoseLandmarks] unparsed landmark event', {
             typeofEvent: typeof event,
             preview:
               typeof event === 'string' ? event.slice(0, 120) : event,
@@ -80,6 +106,9 @@ export function usePoseLandmarks(
         smoothingWindowSize,
       );
       const smoothed = smoothLandmarks(historyRef.current);
+
+      // 원본 → 녹화 버퍼(ref push만). 스무딩본은 화면 표시 state에만 사용.
+      onRawFrameRefStable.current?.current?.(normalized);
 
       setRawLandmarks(normalized);
       setLandmarks(smoothed);
