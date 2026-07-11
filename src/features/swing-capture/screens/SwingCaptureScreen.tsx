@@ -2,7 +2,7 @@
 
 import { RNMediapipe } from '@thinksys/react-native-mediapipe';
 import * as Device from 'expo-device';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Platform,
   Pressable,
@@ -16,10 +16,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset } from '@/constants/theme';
 
+import CameraPermissionGate from '../components/CameraPermissionGate';
+import CaptureWarningBanners from '../components/CaptureWarningBanners';
 import SkeletonOverlay from '../components/SkeletonOverlay';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
+import { useSyncOnForeground } from '../hooks/useSyncOnForeground';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
 import {
   buildSwingSession,
@@ -31,8 +34,15 @@ import {
 const RECORD_BUTTON_GAP_IOS = 16;
 const RECORD_BUTTON_BOTTOM_ANDROID = 28;
 
+/** 저조도 경고 — 랜드마크 평균 visibility 임계값 (6장) */
+const LOW_LIGHT_VISIBILITY_THRESHOLD = 0.5;
+/** 포즈 미인식 경고까지 대기 (ms) (6장) */
+const POSE_LOST_WARN_MS = 2000;
+/** 상태바 아래 경고 배너 간격 */
+const WARNING_BANNER_GAP_BELOW_STATUS = 72;
+
 /**
- * Step 3–6: Skia 스켈레톤 + 녹화 + 구간 분할 + 로컬/Supabase 세션 저장.
+ * Step 3–7: Skia 스켈레톤 + 녹화 + 구간 분할 + 세션 저장 + 에러/권한 UX.
  * thinksys 네이티브 뼈대 오버레이는 body-part props=false로 끈다.
  *
  * 실기기(Dev Client)에서만 카메라/포즈가 동작한다.
@@ -43,9 +53,13 @@ export default function SwingCaptureScreen() {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const displayPointsSV = useSharedValue(createEmptyPackedPosePoints());
   const viewSizeRef = useRef({ width: 0, height: 0 });
+  const poseLostSinceRef = useRef<number | null>(null);
   const [lastStoredSession, setLastStoredSession] =
     useState<StoredSwingSession | null>(null);
   const [isSavingSession, setIsSavingSession] = useState(false);
+  const [showPoseLostWarn, setShowPoseLostWarn] = useState(false);
+
+  useSyncOnForeground();
 
   const {
     isRecording,
@@ -74,6 +88,28 @@ export default function SwingCaptureScreen() {
       displayPointsSV,
       viewSizeRef,
     });
+
+  useEffect(() => {
+    if (isPoseDetected) {
+      poseLostSinceRef.current = null;
+      setShowPoseLostWarn(false);
+      return;
+    }
+    if (poseLostSinceRef.current == null) {
+      poseLostSinceRef.current = Date.now();
+    }
+    const timer = setInterval(() => {
+      const since = poseLostSinceRef.current;
+      if (since != null && Date.now() - since >= POSE_LOST_WARN_MS) {
+        setShowPoseLostWarn(true);
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [isPoseDetected]);
+
+  const showLowLight =
+    isPoseDetected && averageVisibility < LOW_LIGHT_VISIBILITY_THRESHOLD;
+
   const recordButtonBottom = useMemo(() => {
     if (Platform.OS === 'ios') {
       return insets.bottom + BottomTabInset + RECORD_BUTTON_GAP_IOS;
@@ -153,76 +189,84 @@ export default function SwingCaptureScreen() {
   }
 
   return (
-    <View style={styles.root}>
-      <View style={[styles.cameraWrap, cameraSize]}>
-        <RNMediapipe
-          width={cameraSize.width}
-          height={cameraSize.height}
-          // thinksys 내장 스켈레톤 OFF — Skia SkeletonOverlay로 대체
-          face={false}
-          leftArm={false}
-          rightArm={false}
-          leftWrist={false}
-          rightWrist={false}
-          torso={false}
-          leftLeg={false}
-          rightLeg={false}
-          leftAnkle={false}
-          rightAnkle={false}
-          frameLimit={30}
-          onLandmark={onLandmark}
-          style={styles.camera}
-        />
-        <SkeletonOverlay
-          pointsSV={displayPointsSV}
-          width={cameraSize.width}
-          height={cameraSize.height}
-        />
-      </View>
+    <CameraPermissionGate>
+      <View style={styles.root}>
+        <View style={[styles.cameraWrap, cameraSize]}>
+          <RNMediapipe
+            width={cameraSize.width}
+            height={cameraSize.height}
+            // thinksys 내장 스켈레톤 OFF — Skia SkeletonOverlay로 대체
+            face={false}
+            leftArm={false}
+            rightArm={false}
+            leftWrist={false}
+            rightWrist={false}
+            torso={false}
+            leftLeg={false}
+            rightLeg={false}
+            leftAnkle={false}
+            rightAnkle={false}
+            frameLimit={30}
+            onLandmark={onLandmark}
+            style={styles.camera}
+          />
+          <SkeletonOverlay
+            pointsSV={displayPointsSV}
+            width={cameraSize.width}
+            height={cameraSize.height}
+          />
+        </View>
 
-      <View style={[styles.statusBar, { top: insets.top + 12 }]} pointerEvents="none">
-        <Text style={styles.statusText}>
-          {isRecording ? '녹화 중' : isPoseDetected ? '포즈 감지됨' : '포즈 대기 중'}
-          {' · '}
-          live {frameCount}
-          {isRecording ? ` · buf ${bufferedFrameCount}` : ''}
-          {' · '}
-          vis {averageVisibility.toFixed(2)}
-        </Text>
-        <Text style={styles.statusSub}>
-          {isSavingSession
-            ? '세션 저장 중…'
-            : lastResult
-              ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms${
-                  phaseSummary ? ` · ${phaseSummary}` : ''
-                }${
-                  lastStoredSession
-                    ? ` · 저장 ${lastStoredSession.syncStatus}${
-                        lastStoredSession.lastSyncError
-                          ? ` (${lastStoredSession.lastSyncError})`
-                          : ''
-                      }`
-                    : ''
-                }${phaseWarning ? ` · ${phaseWarning}` : ''}`
-              : 'Skia 스켈레톤 · 녹화 종료 시 구간 분할·로컬 저장'}
-        </Text>
-      </View>
+        <View style={[styles.statusBar, { top: insets.top + 12 }]} pointerEvents="none">
+          <Text style={styles.statusText}>
+            {isRecording ? '녹화 중' : isPoseDetected ? '포즈 감지됨' : '포즈 대기 중'}
+            {' · '}
+            live {frameCount}
+            {isRecording ? ` · buf ${bufferedFrameCount}` : ''}
+            {' · '}
+            vis {averageVisibility.toFixed(2)}
+          </Text>
+          <Text style={styles.statusSub}>
+            {isSavingSession
+              ? '세션 저장 중…'
+              : lastResult
+                ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms${
+                    phaseSummary ? ` · ${phaseSummary}` : ''
+                  }${
+                    lastStoredSession
+                      ? ` · 저장 ${lastStoredSession.syncStatus}${
+                          lastStoredSession.lastSyncError
+                            ? ` (${lastStoredSession.lastSyncError})`
+                            : ''
+                        }`
+                      : ''
+                  }${phaseWarning ? ` · ${phaseWarning}` : ''}`
+                : 'Skia 스켈레톤 · 녹화 종료 시 구간 분할·로컬 저장'}
+          </Text>
+        </View>
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={isRecording ? '녹화 종료' : '녹화 시작'}
-        onPress={handleRecordPress}
-        style={[
-          styles.recordButton,
-          { bottom: recordButtonBottom },
-          isRecording && styles.recordButtonActive,
-        ]}
-      >
-        <View
-          style={[styles.recordInner, isRecording && styles.recordInnerActive]}
+        <CaptureWarningBanners
+          top={insets.top + 12 + WARNING_BANNER_GAP_BELOW_STATUS}
+          showLowLight={showLowLight}
+          showPoseLost={showPoseLostWarn && !isRecording}
         />
-      </Pressable>
-    </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={isRecording ? '녹화 종료' : '녹화 시작'}
+          onPress={handleRecordPress}
+          style={[
+            styles.recordButton,
+            { bottom: recordButtonBottom },
+            isRecording && styles.recordButtonActive,
+          ]}
+        >
+          <View
+            style={[styles.recordInner, isRecording && styles.recordInnerActive]}
+          />
+        </Pressable>
+      </View>
+    </CameraPermissionGate>
   );
 }
 
