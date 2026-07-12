@@ -19,7 +19,11 @@ import {
   isSupabaseConfigured,
 } from '../../../services/supabase/client';
 
-import { getDevAuthBypass, setDevAuthBypass } from '../lib/devAuthBypass';
+import {
+  getDevAuthBypass,
+  isDevAuthBypassEnabled,
+  setDevAuthBypass,
+} from '../lib/devAuthBypass';
 import {
   isProfileComplete,
   type UserProfile,
@@ -48,13 +52,13 @@ interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
   isConfigured: boolean;
-  /** 소셜 로그인 또는 __DEV__ 스킵 */
+  /** 소셜 로그인 또는 내부 빌드 임시 로그인 */
   isSocialUser: boolean;
   profile: UserProfile | null;
   isProfileComplete: boolean;
   refresh: () => Promise<void>;
   refreshProfile: () => Promise<void>;
-  /** __DEV__: 익명 세션 + 게이트 우회 → 프로필 화면 */
+  /** 개발/내부 빌드: 익명 세션 + 게이트 우회 → 프로필 화면 */
   skipSocialLoginForDev: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -130,8 +134,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadProfile, refresh]);
 
   const skipSocialLoginForDev = useCallback(async () => {
-    if (!__DEV__) {
-      return;
+    if (!isDevAuthBypassEnabled()) {
+      throw new Error('개발 임시 로그인은 내부 빌드에서만 사용할 수 있습니다.');
     }
     if (!isSupabaseConfigured()) {
       throw new Error('Supabase 미설정');
@@ -163,7 +167,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthContextValue>(() => {
     const user = session?.user ?? null;
     const social =
-      user != null && (isSocialUser(user) || (__DEV__ && devBypass));
+      user != null &&
+      (isSocialUser(user) || (isDevAuthBypassEnabled() && devBypass));
     return {
       session,
       user,

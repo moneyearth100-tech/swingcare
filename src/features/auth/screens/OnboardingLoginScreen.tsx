@@ -22,6 +22,7 @@ import {
   signInWithSocialProvider,
   type SocialProviderId,
 } from '../lib/socialAuth';
+import { isDevAuthBypassEnabled } from '../lib/devAuthBypass';
 import { saveLabelingDataConsent } from '../lib/userProfile';
 import PrivacyPolicyBody from '../../legal/components/PrivacyPolicyBody';
 import {
@@ -64,6 +65,7 @@ const PROVIDERS: {
 export default function OnboardingLoginScreen() {
   const insets = useSafeAreaInsets();
   const { isConfigured, refresh, skipSocialLoginForDev } = useAuth();
+  const devTempLoginEnabled = isDevAuthBypassEnabled();
   const [busyProvider, setBusyProvider] = useState<SocialProviderId | null>(
     null,
   );
@@ -284,10 +286,10 @@ export default function OnboardingLoginScreen() {
             );
           })}
 
-          {__DEV__ ? (
+          {devTempLoginEnabled ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="개발용으로 프로필 단계 건너뛰기"
+              accessibilityLabel="개발 임시 로그인"
               disabled={busyProvider != null || devSkipping || !canContinue}
               onPress={() => {
                 void handleDevSkip();
@@ -303,9 +305,7 @@ export default function OnboardingLoginScreen() {
               {devSkipping ? (
                 <ActivityIndicator color="#5A6478" />
               ) : (
-                <Text style={styles.devSkipLabel}>
-                  개발용 · 연동 없이 다음 단계
-                </Text>
+                <Text style={styles.devSkipLabel}>개발임시로그인</Text>
               )}
             </Pressable>
           ) : null}
