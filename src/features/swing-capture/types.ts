@@ -13,7 +13,7 @@ export type CaptureSegment = 'live' | 'upload';
 /** 포즈 인식 상태 (캡처 화면 칩/배너용) */
 export type PoseDetectionStatus = 'detecting' | 'detected' | 'lost';
 
-/** 업로드 탭 최근 파일 목록 UI용 (실제 업로드는 스텁) */
+/** 업로드 탭 최근 파일 목록 UI용 */
 export interface RecentUploadItem {
   id: string;
   name: string;

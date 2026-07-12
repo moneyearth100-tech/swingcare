@@ -1,0 +1,3 @@
+# Models are downloaded locally (see scripts/download_model.py)
+*.task
+!.gitkeep

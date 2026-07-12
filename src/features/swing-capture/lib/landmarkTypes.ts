@@ -92,12 +92,31 @@ export const SWING_PHASES: readonly SwingPhase[] = [
   'finish',
 ] as const;
 
-/** 구간 마커 — detected(규칙 탐지) vs interpolated(앵커 사이 보간) */
+/**
+ * 구간 마커 — detected(규칙 탐지) vs interpolated(앵커 사이 보간).
+ *
+ * 관리자 재태깅:
+ *   - DB `phases` = AI/규칙 원본 (유지)
+ *   - DB `phases_verified` = 사람 수정본 (nullable)
+ *   - 앱/채점: `effectivePhases(phases_verified, phases)` = verified ?? 원본
+ *   - 도구: tools/admin-phase-retag/
+ */
 export interface PhaseMarker {
   phase: SwingPhase;
   timestampMs: number;
   frameIndex: number;
-  source: 'detected' | 'interpolated';
+  source: 'detected' | 'interpolated' | 'manual';
+}
+
+/** 검수본이 있으면 우선, 없으면 AI 원본 */
+export function effectivePhases(
+  phases: readonly PhaseMarker[] | null | undefined,
+  phasesVerified?: readonly PhaseMarker[] | null,
+): PhaseMarker[] {
+  if (phasesVerified != null && phasesVerified.length > 0) {
+    return [...phasesVerified];
+  }
+  return phases != null ? [...phases] : [];
 }
 
 /** 로컬/원격에 저장하는 스윙 세션 (랜드마크 좌표만, 영상 픽셀 미포함) */

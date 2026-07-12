@@ -9,7 +9,12 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.x4track.SwingCare"
+      "bundleIdentifier": "com.x4track.SwingCare",
+      "infoPlist": {
+        "NSCameraUsageDescription": "스윙 자세 안내를 위해 카메라를 사용합니다",
+        "NSPhotoLibraryUsageDescription": "업로드할 스윙 영상을 사진 앱에서 선택합니다",
+        "NSPhotoLibraryAddUsageDescription": "분석용 스윙 영상을 사진 앱에 저장할 수 있습니다"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +29,9 @@
         "android.permission.CAMERA",
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -34,13 +41,20 @@
     "plugins": [
       "expo-router",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "업로드할 스윙 영상을 사진 앱에서 선택합니다"
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#208AEF",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true,

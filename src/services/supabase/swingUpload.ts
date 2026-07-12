@@ -1,0 +1,263 @@
+/**
+ * 영상 업로드 → Storage signed URL PUT → swing_sessions(pending).
+ *
+ * NOTE (5.4절):
+ *   실시간(live)은 기본으로 랜드마크만 저장 (video_url = null).
+ *   코칭 전송 시 attachVideoToSwingSession 으로 원본을 붙일 수 있다.
+ *   업로드(upload)는 생성 시점에 Storage + video_url 을 둔다.
+ */
+
+import { File } from 'expo-file-system';
+import { Platform } from 'react-native';
+
+import { enqueueSessionAnalyze } from './analyzeEnqueue';
+import {
+  ensureAnonymousUserId,
+  getSupabaseClient,
+  isSupabaseConfigured,
+} from './client';
+
+const BUCKET = 'swing-uploads';
+
+export type UploadSwingVideoResult =
+  | {
+      ok: true;
+      sessionId: string;
+      videoUrl: string;
+      storagePath: string;
+    }
+  | {
+      ok: false;
+      reason: 'not_configured' | 'auth' | 'signed_url' | 'put' | 'insert' | 'error';
+      message: string;
+    };
+
+/**
+ * swing_sessions.id 는 uuid.
+ * expo-crypto 네이티브 모듈에 의존하지 않음 (Dev Client 미포함 시 크래시 방지).
+ */
+function createSessionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const hex = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
+    .padEnd(32, '0')
+    .slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function extensionFromName(name: string, mimeType?: string | null): string {
+  const fromName = name.includes('.')
+    ? name.slice(name.lastIndexOf('.')).toLowerCase()
+    : '';
+  if (fromName && fromName.length <= 5) {
+    return fromName;
+  }
+  if (mimeType?.includes('quicktime')) {
+    return '.mov';
+  }
+  if (mimeType?.includes('webm')) {
+    return '.webm';
+  }
+  return '.mp4';
+}
+
+async function putLocalVideoToStorage(input: {
+  userId: string;
+  sessionId: string;
+  localUri: string;
+  fileName: string;
+  mimeType?: string | null;
+}): Promise<
+  | { ok: true; videoUrl: string; storagePath: string }
+  | { ok: false; reason: 'signed_url' | 'put'; message: string }
+> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, reason: 'put', message: 'Supabase client unavailable' };
+  }
+
+  const ext = extensionFromName(input.fileName, input.mimeType);
+  const storagePath = `${input.userId}/${input.sessionId}${ext}`;
+  const contentType = input.mimeType || 'video/mp4';
+
+  const { data: signed, error: signError } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUploadUrl(storagePath);
+
+  if (signError || !signed?.signedUrl) {
+    console.warn('[putLocalVideoToStorage] signedUrl', signError?.message);
+    return {
+      ok: false,
+      reason: 'signed_url',
+      message: signError?.message ?? 'signed upload URL 발급 실패',
+    };
+  }
+
+  try {
+    const file = new File(input.localUri);
+    const uploadResult = await file.upload(signed.signedUrl, {
+      httpMethod: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+      },
+    });
+
+    if (uploadResult.status < 200 || uploadResult.status >= 300) {
+      console.warn(
+        '[putLocalVideoToStorage] PUT',
+        uploadResult.status,
+        uploadResult.body,
+      );
+      return {
+        ok: false,
+        reason: 'put',
+        message: `업로드 실패 (${uploadResult.status})`,
+      };
+    }
+  } catch (e) {
+    console.warn('[putLocalVideoToStorage] file.upload', e);
+    return {
+      ok: false,
+      reason: 'put',
+      message: e instanceof Error ? e.message : '로컬 영상 업로드 실패',
+    };
+  }
+
+  return {
+    ok: true,
+    videoUrl: `${BUCKET}/${storagePath}`,
+    storagePath,
+  };
+}
+
+/**
+ * 기존 세션(주로 live)에 코칭용 원본 영상을 붙인다. capture_mode 는 유지.
+ */
+export async function attachVideoToSwingSession(input: {
+  sessionId: string;
+  localUri: string;
+  fileName: string;
+  mimeType?: string | null;
+}): Promise<{ ok: true; videoUrl: string } | { ok: false; message: string }> {
+  if (!isSupabaseConfigured()) {
+    return { ok: false, message: 'Supabase 미설정' };
+  }
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, message: 'Supabase client unavailable' };
+  }
+  const userId = await ensureAnonymousUserId();
+  if (!userId) {
+    return { ok: false, message: '로그인(익명 포함)이 필요합니다' };
+  }
+
+  const uploaded = await putLocalVideoToStorage({
+    userId,
+    sessionId: input.sessionId,
+    localUri: input.localUri,
+    fileName: input.fileName,
+    mimeType: input.mimeType,
+  });
+  if (!uploaded.ok) {
+    return { ok: false, message: uploaded.message };
+  }
+
+  const { error } = await supabase
+    .from('swing_sessions')
+    .update({
+      video_url: uploaded.videoUrl,
+    })
+    .eq('id', input.sessionId)
+    .eq('user_id', userId);
+
+  if (error) {
+    return { ok: false, message: error.message };
+  }
+  return { ok: true, videoUrl: uploaded.videoUrl };
+}
+
+/**
+ * createSignedUploadUrl → PUT(signedUrl) → swing_sessions insert.
+ * Android content:// 는 fetch(blob)가 실패하기 쉬워 expo-file-system File.upload 사용.
+ */
+export async function uploadSwingVideoAndCreateSession(input: {
+  localUri: string;
+  fileName: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+}): Promise<UploadSwingVideoResult> {
+  if (!isSupabaseConfigured()) {
+    return {
+      ok: false,
+      reason: 'not_configured',
+      message: 'Supabase 미설정',
+    };
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return {
+      ok: false,
+      reason: 'not_configured',
+      message: 'Supabase client unavailable',
+    };
+  }
+
+  const userId = await ensureAnonymousUserId();
+  if (!userId) {
+    return {
+      ok: false,
+      reason: 'auth',
+      message: '로그인(익명 포함)이 필요합니다',
+    };
+  }
+
+  const sessionId = createSessionId();
+  const uploaded = await putLocalVideoToStorage({
+    userId,
+    sessionId,
+    localUri: input.localUri,
+    fileName: input.fileName,
+    mimeType: input.mimeType,
+  });
+  if (!uploaded.ok) {
+    return {
+      ok: false,
+      reason: uploaded.reason,
+      message: uploaded.message,
+    };
+  }
+
+  const platform = Platform.OS === 'ios' ? 'ios' : 'android';
+  const { error: insertError } = await supabase.from('swing_sessions').insert({
+    id: sessionId,
+    user_id: userId,
+    duration_ms: 0,
+    platform,
+    fps: 0,
+    frames: [],
+    phases: [],
+    capture_mode: 'upload',
+    video_url: uploaded.videoUrl,
+    status: 'pending',
+  });
+
+  if (insertError) {
+    console.warn('[uploadSwingVideo] insert', insertError.message);
+    return {
+      ok: false,
+      reason: 'insert',
+      message: insertError.message,
+    };
+  }
+
+  void enqueueSessionAnalyze(sessionId);
+
+  return {
+    ok: true,
+    sessionId,
+    videoUrl: uploaded.videoUrl,
+    storagePath: uploaded.storagePath,
+  };
+}

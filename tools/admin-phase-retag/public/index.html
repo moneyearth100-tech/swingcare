@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SwingCare Phase Retag</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #f4f7fb;
+        color: #232630;
+      }
+      header {
+        padding: 16px 20px;
+        background: #fff;
+        border-bottom: 1px solid #e5e8ef;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        gap: 16px;
+        padding: 16px;
+        min-height: calc(100vh - 64px);
+      }
+      .panel {
+        background: #fff;
+        border-radius: 14px;
+        border: 1px solid #e5e8ef;
+        padding: 14px;
+        overflow: auto;
+        max-height: calc(100vh - 100px);
+      }
+      .session {
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        margin-bottom: 8px;
+      }
+      .session:hover {
+        background: #f7f8fc;
+      }
+      .session.active {
+        border-color: #8971ea;
+        background: rgba(137, 113, 234, 0.08);
+      }
+      .meta {
+        font-size: 12px;
+        color: #7a8198;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 800;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #efeaff;
+        color: #6c56d6;
+      }
+      .badge.ok {
+        background: #e7f8f0;
+        color: #2db88a;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 6px;
+        border-bottom: 1px solid #eef1f6;
+        font-size: 13px;
+      }
+      input[type='number'],
+      input[type='text'] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #d5d9e3;
+      }
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 700;
+        cursor: pointer;
+        background: #2d3142;
+        color: #fff;
+      }
+      button.secondary {
+        background: #eef0f5;
+        color: #232630;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 10px 0;
+        flex-wrap: wrap;
+      }
+      .err {
+        color: #d64545;
+        font-size: 13px;
+      }
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>SwingCare · Phase Retag</h1>
+      <span class="meta">phases 원본 유지 · phases_verified 저장</span>
+      <div class="row" style="margin-left: auto">
+        <input
+          id="token"
+          type="password"
+          placeholder="ADMIN_RETAG_TOKEN (선택)"
+          style="width: 220px"
+        />
+        <button class="secondary" id="reload">목록 새로고침</button>
+      </div>
+    </header>
+    <main>
+      <section class="panel" id="list"></section>
+      <section class="panel" id="editor">
+        <p class="meta">왼쪽에서 세션을 선택하세요.</p>
+      </section>
+    </main>
+    <script>
+      const PHASES = [
+        ['address', '어드레스'],
+        ['toe_up', '토우업'],
+        ['mid_backswing', '백스윙중'],
+        ['top', '탑'],
+        ['mid_downswing', '다운스윙중'],
+        ['impact', '임팩트'],
+        ['mid_follow_through', '팔로우중'],
+        ['finish', '피니시'],
+      ];
+
+      let sessions = [];
+      let current = null;
+
+      function authHeaders() {
+        const token = document.getElementById('token').value.trim();
+        const h = { 'Content-Type': 'application/json' };
+        if (token) h.Authorization = 'Bearer ' + token;
+        return h;
+      }
+
+      async function api(path, opts = {}) {
+        const res = await fetch(path, {
+          ...opts,
+          headers: { ...authHeaders(), ...(opts.headers || {}) },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      }
+
+      function renderList() {
+        const el = document.getElementById('list');
+        el.innerHTML = sessions
+          .map((s) => {
+            const verified = Array.isArray(s.phases_verified) && s.phases_verified.length;
+            return `<div class="session ${current?.id === s.id ? 'active' : ''}" data-id="${s.id}">
+              <div><strong>${s.id.slice(0, 8)}…</strong>
+                ${verified ? '<span class="badge ok">verified</span>' : '<span class="badge">auto</span>'}
+              </div>
+              <div class="meta">${s.created_at || ''} · ${s.capture_mode || '-'} · ${s.status || '-'}</div>
+            </div>`;
+          })
+          .join('');
+        el.querySelectorAll('.session').forEach((node) => {
+          node.onclick = () => openSession(node.dataset.id);
+        });
+      }
+
+      function phaseMap(list) {
+        const m = {};
+        for (const p of list || []) m[p.phase] = p;
+        return m;
+      }
+
+      function renderEditor() {
+        const el = document.getElementById('editor');
+        if (!current) {
+          el.innerHTML = '<p class="meta">왼쪽에서 세션을 선택하세요.</p>';
+          return;
+        }
+        const auto = phaseMap(current.phases);
+        const verified = phaseMap(current.phases_verified);
+        const source = Object.keys(verified).length ? verified : auto;
+        el.innerHTML = `
+          <h2 style="margin:0 0 8px;font-size:16px">세션 ${current.id}</h2>
+          <p class="meta">duration ${current.duration_ms || 0}ms · frames ${(current.frames || []).length}
+            ${current.phases_verified_at ? ` · verified ${current.phases_verified_at} by ${current.phases_verified_by || '-'}` : ''}
+          </p>
+          <div class="row">
+            <label class="meta">검수자</label>
+            <input id="verifiedBy" type="text" value="${current.phases_verified_by || 'admin'}" style="width:180px" />
+            <button id="resetAuto" class="secondary">AI 원본으로 채우기</button>
+            <button id="save">정답 저장 (phases_verified)</button>
+          </div>
+          <div id="msg" class="err"></div>
+          <table>
+            <thead><tr><th>구간</th><th>timestampMs</th><th>AI 원본 ms</th></tr></thead>
+            <tbody>
+              ${PHASES.map(([id, label]) => {
+                const v = source[id]?.timestampMs ?? 0;
+                const a = auto[id]?.timestampMs ?? '-';
+                return `<tr>
+                  <td>${label}<div class="meta">${id}</div></td>
+                  <td><input data-phase="${id}" type="number" value="${v}" /></td>
+                  <td class="meta">${a}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+        document.getElementById('save').onclick = saveVerified;
+        document.getElementById('resetAuto').onclick = () => {
+          current.phases_verified = null;
+          renderEditor();
+        };
+      }
+
+      async function openSession(id) {
+        try {
+          const { session } = await api('/api/sessions/' + id);
+          current = session;
+          renderList();
+          renderEditor();
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function saveVerified() {
+        const msg = document.getElementById('msg');
+        msg.textContent = '';
+        const inputs = [...document.querySelectorAll('input[data-phase]')];
+        const phases = inputs.map((input) => ({
+          phase: input.dataset.phase,
+          timestampMs: Number(input.value) || 0,
+          frameIndex: 0,
+          source: 'manual',
+        }));
+        try {
+          const verifiedBy = document.getElementById('verifiedBy').value.trim() || 'admin';
+          const result = await api('/api/sessions/' + current.id + '/verify', {
+            method: 'POST',
+            body: JSON.stringify({ phases, verifiedBy }),
+          });
+          current.phases_verified = result.phases_verified;
+          current.phases_verified_at = result.phases_verified_at;
+          current.phases_verified_by = verifiedBy;
+          const idx = sessions.findIndex((s) => s.id === current.id);
+          if (idx >= 0) {
+            sessions[idx] = {
+              ...sessions[idx],
+              phases_verified: result.phases_verified,
+              phases_verified_at: result.phases_verified_at,
+              phases_verified_by: verifiedBy,
+            };
+          }
+          renderList();
+          renderEditor();
+          msg.style.color = '#2db88a';
+          msg.textContent = '저장됨';
+        } catch (e) {
+          msg.style.color = '#d64545';
+          msg.textContent = e.message;
+        }
+      }
+
+      async function loadList() {
+        const data = await api('/api/sessions?limit=50');
+        sessions = data.sessions || [];
+        renderList();
+      }
+
+      document.getElementById('reload').onclick = () => {
+        loadList().catch((e) => alert(e.message));
+      };
+
+      loadList().catch((e) => {
+        document.getElementById('list').innerHTML =
+          `<p class="err">${e.message}</p>`;
+      });
+    </script>
+  </body>
+</html>

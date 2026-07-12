@@ -1,5 +1,6 @@
 /** 카메라 프리뷰 + MediaPipe 포즈 + Skia 스켈레톤 + 스윙 녹화 버퍼 */
 
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { RNMediapipe } from '@thinksys/react-native-mediapipe';
 import * as Device from 'expo-device';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -22,6 +23,7 @@ import CaptureWarningBanners, {
 } from '../components/CaptureWarningBanners';
 import PhaseTimeline from '../components/PhaseTimeline';
 import SkeletonOverlay from '../components/SkeletonOverlay';
+import SwingUploadPanel from '../components/SwingUploadPanel';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
@@ -32,14 +34,22 @@ import {
   LOW_LIGHT_AVG_VISIBILITY,
 } from '../lib/posePresence';
 import {
+  computeBalanceScore,
+  formatBalanceScoreSummary,
+  type BalanceScoreResult,
+} from '../lib/scoring/balanceScore';
+import { matchDiagnosis } from '../lib/scoring/diagnosisTemplates';
+import {
   buildSwingSession,
   saveSwingSessionLocalFirst,
   type StoredSwingSession,
 } from '../store/swingSessionStore';
+import type { CaptureSegment } from '../types';
+import { bumpProgressAfterSession } from '../../../services/supabase/challenges';
+import { upsertSwingReport } from '../../../services/supabase/swingReports';
 
-/** 탭바 위 녹화 버튼 여백 (iOS만 탭바와 겹침 보정) */
-const RECORD_BUTTON_GAP_IOS = 16;
-const RECORD_BUTTON_BOTTOM_ANDROID = 28;
+/** 탭바 위 녹화 버튼 여백 */
+const RECORD_BUTTON_GAP = 16;
 
 /** 포즈 미인식 경고까지 대기 (ms) */
 const POSE_LOST_WARN_MS = 2000;
@@ -55,6 +65,14 @@ const WARNING_BANNER_GAP_BELOW_STATUS = 72;
  */
 export default function SwingCaptureScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
+  const { mode: modeParam } = useLocalSearchParams<{ mode?: string | string[] }>();
+  const mode =
+    typeof modeParam === 'string'
+      ? modeParam
+      : Array.isArray(modeParam)
+        ? modeParam[0]
+        : undefined;
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const displayPointsSV = useSharedValue(createEmptyPackedPosePoints());
   const viewSizeRef = useRef({ width: 0, height: 0 });
@@ -63,6 +81,30 @@ export default function SwingCaptureScreen() {
     useState<StoredSwingSession | null>(null);
   const [isSavingSession, setIsSavingSession] = useState(false);
   const [showPoseLostWarn, setShowPoseLostWarn] = useState(false);
+  /** 밸런스 지수 (화면 표시) */
+  const [lastBalanceScore, setLastBalanceScore] = useState<BalanceScoreResult | null>(
+    null,
+  );
+  const [reportSyncStatus, setReportSyncStatus] = useState<
+    'idle' | 'saving' | 'synced' | 'error'
+  >('idle');
+  const [reportSyncError, setReportSyncError] = useState<string | null>(null);
+  const [captureSegment, setCaptureSegment] = useState<CaptureSegment>(
+    mode === 'upload' ? 'upload' : 'live',
+  );
+
+  useEffect(() => {
+    // 홈 탭 push(?mode=)로 들어올 때만 URL과 맞춤.
+    // 화면 안 세그먼트 전환은 selectSegment 로컬 상태가 우선.
+    setCaptureSegment(mode === 'upload' ? 'upload' : 'live');
+  }, [mode]);
+
+  // 업로드 모드일 때 탭바 라벨을 「영상」으로 표시
+  useEffect(() => {
+    navigation.setOptions({
+      title: captureSegment === 'upload' ? '영상' : '촬영',
+    });
+  }, [captureSegment, navigation]);
 
   useSessionSyncRetryQueue();
 
@@ -77,6 +119,23 @@ export default function SwingCaptureScreen() {
 
   const { phases, warning: phaseWarning, segment, clear: clearPhases } =
     usePhaseSegmentation();
+
+  /**
+   * 실시간 ↔ 업로드 전환.
+   * 홈 탭과 동일하게 /capture?mode= 로 이동해 SwingUploadPanel + 분석 파이프라인을 탄다.
+   * setParams만 쓰면 탭 화면에서 mode가 안 바뀌어 업로드 패널이 바로 닫히는 경우가 있음.
+   */
+  const selectSegment = (next: CaptureSegment) => {
+    if (next === captureSegment) {
+      return;
+    }
+    if (next === 'upload' && isRecording) {
+      stopRecording();
+      clearPhases();
+    }
+    setCaptureSegment(next);
+    router.navigate(`/(tabs)/capture?mode=${next}`);
+  };
 
   const cameraSize = useMemo(() => {
     const width = Math.floor(windowWidth);
@@ -152,10 +211,8 @@ export default function SwingCaptureScreen() {
   ]);
 
   const recordButtonBottom = useMemo(() => {
-    if (Platform.OS === 'ios') {
-      return insets.bottom + BottomTabInset + RECORD_BUTTON_GAP_IOS;
-    }
-    return RECORD_BUTTON_BOTTOM_ANDROID;
+    // iOS·Android 모두 플로팅 탭바 위에 두기
+    return insets.bottom + BottomTabInset + RECORD_BUTTON_GAP;
   }, [insets.bottom]);
 
   const phaseSummary = useMemo(() => {
@@ -173,10 +230,30 @@ export default function SwingCaptureScreen() {
       if (!result || result.frames.length === 0) {
         clearPhases();
         setLastStoredSession(null);
+        setLastBalanceScore(null);
+        setReportSyncStatus('idle');
+        setReportSyncError(null);
         return;
       }
 
       const segmentResult = segment(result.frames);
+      const balanceScore = computeBalanceScore(
+        result.frames,
+        segmentResult.phases,
+      );
+      setLastBalanceScore(balanceScore);
+      console.log('[balanceScore]', {
+        summary: formatBalanceScoreSummary(balanceScore),
+        version: balanceScore.version,
+        overall: balanceScore.overallScore,
+        joints: {
+          lower_back: balanceScore.joints.lower_back.score,
+          wrist: balanceScore.joints.wrist.score,
+          knee: balanceScore.joints.knee.score,
+        },
+        warning: balanceScore.warning,
+      });
+
       const session = buildSwingSession({
         frames: result.frames,
         phases: segmentResult.phases,
@@ -184,9 +261,51 @@ export default function SwingCaptureScreen() {
       });
 
       setIsSavingSession(true);
+      setReportSyncStatus('saving');
+      setReportSyncError(null);
       void saveSwingSessionLocalFirst(session)
-        .then((stored) => {
+        .then(async (stored) => {
           setLastStoredSession(stored);
+          if (stored.syncStatus !== 'synced' || !stored.userId) {
+            setReportSyncStatus('error');
+            setReportSyncError(
+              stored.lastSyncError ?? 'session not synced — report skipped',
+            );
+            return;
+          }
+          const diagnosis = matchDiagnosis(balanceScore, segmentResult.phases);
+          console.log('[diagnosis]', {
+            patternId: diagnosis.patternId,
+            issuePhase: diagnosis.issuePhase,
+            drill: diagnosis.template.recommendedDrillId,
+            tag: diagnosis.template.tagLabel,
+          });
+
+          const reportResult = await upsertSwingReport({
+            sessionId: stored.id,
+            userId: stored.userId,
+            balanceScore,
+            issuePhase: diagnosis.issuePhase,
+            diagnosisText: diagnosis.template.body,
+            recommendedDrillId: diagnosis.template.recommendedDrillId,
+          });
+          if (reportResult.ok) {
+            setReportSyncStatus('synced');
+            console.log('[swing_reports] synced', stored.id, {
+              issue_phase: diagnosis.issuePhase,
+              recommended_drill_id: diagnosis.template.recommendedDrillId,
+            });
+            // 챌린지 progress: target_issue === patternId (issue_phase와 무관)
+            void bumpProgressAfterSession({
+              userId: stored.userId,
+              patternId: diagnosis.patternId,
+            }).catch((err) => {
+              console.warn('[bumpProgressAfterSession]', err);
+            });
+          } else {
+            setReportSyncStatus('error');
+            setReportSyncError(reportResult.message);
+          }
         })
         .catch(() => {
           setLastStoredSession({
@@ -194,6 +313,8 @@ export default function SwingCaptureScreen() {
             syncStatus: 'error',
             lastSyncError: 'local save failed',
           });
+          setReportSyncStatus('error');
+          setReportSyncError('local save failed');
         })
         .finally(() => {
           setIsSavingSession(false);
@@ -202,6 +323,9 @@ export default function SwingCaptureScreen() {
     }
     clearPhases();
     setLastStoredSession(null);
+    setLastBalanceScore(null);
+    setReportSyncStatus('idle');
+    setReportSyncError(null);
     startRecording();
   };
 
@@ -217,14 +341,58 @@ export default function SwingCaptureScreen() {
     );
   }
 
+  const segmentControl = (
+    <View style={styles.segmented}>
+      {(
+        [
+          { id: 'live' as const, label: '실시간 촬영' },
+          { id: 'upload' as const, label: '영상 업로드' },
+        ] as const
+      ).map((item) => {
+        const active = captureSegment === item.id;
+        return (
+          <Pressable
+            key={item.id}
+            accessibilityRole="button"
+            accessibilityState={{ selected: active }}
+            onPress={() => selectSegment(item.id)}
+            style={[styles.segmentBtn, active && styles.segmentBtnActive]}
+          >
+            <Text
+              style={[styles.segmentLabel, active && styles.segmentLabelActive]}
+            >
+              {item.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+
+  if (captureSegment === 'upload') {
+    return (
+      <View style={styles.uploadRoot}>
+        <View style={[styles.uploadTopbar, { paddingTop: insets.top + 8 }]}>
+          <Text style={styles.uploadTitle}>영상</Text>
+          <Text style={styles.uploadSub}>
+            동영상으로 기록된 스윙을 분석해요
+          </Text>
+        </View>
+        <View style={styles.segmentWrap}>{segmentControl}</View>
+        <SwingUploadPanel bottomInset={insets.bottom + BottomTabInset} />
+      </View>
+    );
+  }
+
   if (!Device.isDevice) {
     return (
       <View style={[styles.center, { paddingTop: insets.top }]}>
         <Text style={styles.title}>스윙 캡처</Text>
         <Text style={styles.hint}>
           시뮬레이터에서는 카메라가 동작하지 않습니다. 실기기에 Dev Client를
-          설치한 뒤 테스트해주세요.
+          설치한 뒤 테스트해주세요. 업로드는 아래에서 가능합니다.
         </Text>
+        <View style={styles.segmentWrap}>{segmentControl}</View>
       </View>
     );
   }
@@ -232,6 +400,12 @@ export default function SwingCaptureScreen() {
   return (
     <CameraPermissionGate>
       <View style={styles.root}>
+        <View
+          style={[styles.segmentOverlay, { top: insets.top + 8 }]}
+          pointerEvents="box-none"
+        >
+          {segmentControl}
+        </View>
         <View style={[styles.cameraWrap, cameraSize]}>
           <RNMediapipe
             width={cameraSize.width}
@@ -258,7 +432,10 @@ export default function SwingCaptureScreen() {
           />
         </View>
 
-        <View style={[styles.statusBar, { top: insets.top + 12 }]} pointerEvents="none">
+        <View
+          style={[styles.statusBar, { top: insets.top + 64 }]}
+          pointerEvents="box-none"
+        >
           <Text style={styles.statusText}>
             {isRecording ? '녹화 중' : isPoseDetected ? '포즈 감지됨' : '포즈 대기 중'}
             {' · '}
@@ -287,10 +464,49 @@ export default function SwingCaptureScreen() {
           {!isRecording && phases.length > 0 ? (
             <PhaseTimeline phases={phases} />
           ) : null}
+          {!isRecording && lastBalanceScore ? (
+            <View style={styles.tempScoreBox}>
+              <Text style={styles.tempScoreTitle}>밸런스 지수</Text>
+              <Text style={styles.tempScoreMain}>
+                종합 {lastBalanceScore.overallScore}
+              </Text>
+              <Text style={styles.tempScoreJoints}>
+                허리 {lastBalanceScore.joints.lower_back.score}
+                {' · '}
+                손목 {lastBalanceScore.joints.wrist.score}
+                {' · '}
+                무릎 {lastBalanceScore.joints.knee.score}
+              </Text>
+              <Text style={styles.tempScoreJoints}>
+                report{' '}
+                {reportSyncStatus === 'idle'
+                  ? '—'
+                  : reportSyncStatus === 'saving'
+                    ? '저장 중…'
+                    : reportSyncStatus === 'synced'
+                      ? 'synced'
+                      : `error${reportSyncError ? ` (${reportSyncError})` : ''}`}
+              </Text>
+              {reportSyncStatus === 'synced' && lastStoredSession ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    router.push(`/report/${lastStoredSession.id}`);
+                  }}
+                  style={styles.reportLink}
+                >
+                  <Text style={styles.reportLinkLabel}>리포트 상세 보기</Text>
+                </Pressable>
+              ) : null}
+              {lastBalanceScore.warning ? (
+                <Text style={styles.tempScoreWarn}>{lastBalanceScore.warning}</Text>
+              ) : null}
+            </View>
+          ) : null}
         </View>
 
         <CaptureWarningBanners
-          top={insets.top + 12 + WARNING_BANNER_GAP_BELOW_STATUS}
+          top={insets.top + 64 + WARNING_BANNER_GAP_BELOW_STATUS}
           kind={warningKind}
         />
 
@@ -317,6 +533,62 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: '#16171F',
+  },
+  uploadRoot: {
+    flex: 1,
+    backgroundColor: '#FDFDFD',
+  },
+  uploadTopbar: {
+    paddingHorizontal: 24,
+    paddingBottom: 8,
+  },
+  uploadTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#232630',
+  },
+  uploadSub: {
+    marginTop: 3,
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#7A8198',
+  },
+  segmentWrap: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+  },
+  segmentOverlay: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    zIndex: 50,
+    elevation: 50,
+  },
+  segmented: {
+    flexDirection: 'row',
+    padding: 5,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: 'rgba(255,255,255,0.8)',
+    gap: 2,
+  },
+  segmentBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  segmentBtnActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  segmentLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#7A8198',
+  },
+  segmentLabelActive: {
+    color: '#232630',
   },
   cameraWrap: {
     position: 'relative',
@@ -367,6 +639,49 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  tempScoreBox: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center',
+    gap: 2,
+  },
+  tempScoreTitle: {
+    color: 'rgba(255,200,120,0.95)',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  tempScoreMain: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  tempScoreJoints: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tempScoreWarn: {
+    marginTop: 2,
+    color: 'rgba(255,180,160,0.95)',
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  reportLink: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: 'rgba(47,107,255,0.85)',
+  },
+  reportLinkLabel: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
   },
   recordButton: {
     position: 'absolute',

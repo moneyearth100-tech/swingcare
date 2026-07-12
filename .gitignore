@@ -34,6 +34,16 @@ yarn-error.*
 .env
 .env*.local
 
+# Python (vision probe / swingcare-vision)
+.venv/
+.venv-mp-probe/
+swingcare-vision/.venv/
+swingcare-api/node_modules/
+swingcare-coach-web/node_modules/
+swingcare-coach-web/.next/
+__pycache__/
+*.pyc
+
 # typescript
 *.tsbuildinfo
 

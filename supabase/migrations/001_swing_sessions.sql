@@ -12,6 +12,7 @@ create table public.swing_sessions (
   platform text not null check (platform in ('ios', 'android')),
   fps double precision not null,
   frames jsonb not null default '[]'::jsonb,
+  -- phases: PhaseMarker[] (detected|interpolated). 사람 검수용 phases_verified 분리는 추후 — landmarkTypes.ts NOTE 참고
   phases jsonb not null default '[]'::jsonb
 );
 
