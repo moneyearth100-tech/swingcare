@@ -16,7 +16,6 @@ function AuthRoot() {
   const {
     isLoading,
     isSocialUser,
-    isConfigured,
     isProfileComplete,
   } = useAuth();
 
@@ -28,11 +27,11 @@ function AuthRoot() {
     );
   }
 
-  if (isConfigured && !isSocialUser) {
+  if (!isSocialUser) {
     return <OnboardingLoginScreen />;
   }
 
-  if (isConfigured && isSocialUser && !isProfileComplete) {
+  if (!isProfileComplete) {
     return <ProfileSetupScreen mode="onboarding" />;
   }
 

@@ -162,7 +162,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AuthContextValue>(() => {
     const user = session?.user ?? null;
-    const social = isSocialUser(user) || (__DEV__ && devBypass);
+    const social =
+      user != null && (isSocialUser(user) || (__DEV__ && devBypass));
     return {
       session,
       user,

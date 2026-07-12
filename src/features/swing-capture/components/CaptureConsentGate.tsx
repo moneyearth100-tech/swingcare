@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../auth/hooks/useAuth';
 import { saveLabelingDataConsent } from '../../auth/lib/userProfile';
+import OnboardingLoginScreen from '../../auth/screens/OnboardingLoginScreen';
 
 type Props = {
   children: ReactNode;
@@ -42,7 +43,6 @@ export default function CaptureConsentGate({ children }: Props) {
       return;
     }
     if (!user?.id) {
-      Alert.alert('로그인 필요', '동의 저장을 위해 로그인이 필요합니다.');
       return;
     }
     setSaving(true);
@@ -65,6 +65,10 @@ export default function CaptureConsentGate({ children }: Props) {
         <ActivityIndicator color="#8971EA" />
       </View>
     );
+  }
+
+  if (!user) {
+    return <OnboardingLoginScreen />;
   }
 
   if (hasConsent) {
