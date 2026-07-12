@@ -1,11 +1,14 @@
 /**
- * 홈 탭 대시보드: 최근 리포트 · 히어로 · 추천 드릴 · 챌린지 배너.
+ * 홈 탭 대시보드: 최근 리포트 · 히어로 · 추천 드릴.
  */
 
 import {
+  BALANCE_SCORE_JOINTS,
+  JOINT_LABEL_KO,
   SCORE_BAND_CAUTION,
   SCORE_BAND_GOOD,
 } from '../../features/swing-capture/lib/scoring/balanceScoreConstants';
+import { parseDiagnosisText } from '../../features/swing-capture/lib/scoring/diagnosisTemplates';
 
 import {
   ensureAnonymousUserId,
@@ -25,16 +28,6 @@ export type HomeRecentReport = {
   overallScore: number;
 };
 
-export type HomeChallengeBanner = {
-  challengeId: string;
-  title: string;
-  progress: number;
-  goalCount: number;
-  progressLabel: string;
-  meta: string;
-  completed: boolean;
-};
-
 export type HomeDashboard = {
   overallScore: number | null;
   statusLabel: string;
@@ -48,7 +41,6 @@ export type HomeDashboard = {
   recentReports: HomeRecentReport[];
   drill: DrillRow | null;
   drillFallback: string | null;
-  challenge: HomeChallengeBanner | null;
 };
 
 const PHASE_TAG: Record<string, string> = {
@@ -97,26 +89,15 @@ function jointWarn(value: number): boolean {
 function parseJoints(
   jointScores: SwingReportJointScores | null | undefined,
 ): HomeDashboard['joints'] {
-  const lb = jointScores?.lower_back;
-  const wrist = jointScores?.wrist;
-  const knee = jointScores?.knee;
-  return [
-    {
-      label: '허리',
-      value: typeof lb === 'number' ? Math.round(lb) : null,
-      warn: typeof lb === 'number' ? jointWarn(lb) : false,
-    },
-    {
-      label: '손목',
-      value: typeof wrist === 'number' ? Math.round(wrist) : null,
-      warn: typeof wrist === 'number' ? jointWarn(wrist) : false,
-    },
-    {
-      label: '무릎',
-      value: typeof knee === 'number' ? Math.round(knee) : null,
-      warn: typeof knee === 'number' ? jointWarn(knee) : false,
-    },
-  ];
+  return BALANCE_SCORE_JOINTS.map((key) => {
+    const raw = jointScores?.[key];
+    const value = typeof raw === 'number' ? Math.round(raw) : null;
+    return {
+      label: JOINT_LABEL_KO[key],
+      value,
+      warn: value != null ? jointWarn(value) : false,
+    };
+  });
 }
 
 const EMPTY: HomeDashboard = {
@@ -125,15 +106,14 @@ const EMPTY: HomeDashboard = {
   statusTone: 'empty',
   heroDesc:
     '아직 스윙 리포트가 없어요.\n실시간 촬영이나 영상 업로드로 시작해 보세요.',
-  joints: [
-    { label: '허리', value: null, warn: false },
-    { label: '손목', value: null, warn: false },
-    { label: '무릎', value: null, warn: false },
-  ],
+  joints: BALANCE_SCORE_JOINTS.map((key) => ({
+    label: JOINT_LABEL_KO[key],
+    value: null,
+    warn: false,
+  })),
   recentReports: [],
   drill: null,
   drillFallback: '리포트가 쌓이면 맞춤 드릴을 추천해 드려요.',
-  challenge: null,
 };
 
 export async function fetchHomeDashboard(): Promise<HomeDashboard> {
@@ -161,14 +141,15 @@ export async function fetchHomeDashboard(): Promise<HomeDashboard> {
 
   const rows = (reports ?? []) as SwingReportRow[];
   if (rows.length === 0) {
-    const challengeOnly = await fetchChallengeBanner(supabase);
-    return { ...EMPTY, challenge: challengeOnly };
+    return EMPTY;
   }
 
   const latest = rows[0];
   const score = Number(latest.overall_score);
   const status = scoreStatus(score);
+  const latestParsed = parseDiagnosisText(latest.diagnosis_text);
   const heroDesc =
+    latestParsed.summary ||
     latest.diagnosis_text?.trim() ||
     '최근 스윙 밸런스를 확인해 보세요.';
 
@@ -176,8 +157,9 @@ export async function fetchHomeDashboard(): Promise<HomeDashboard> {
     const createdAt = r.created_at ?? new Date().toISOString();
     const phaseKey = r.issue_phase ?? '';
     const phaseLabel = PHASE_TAG[phaseKey] ?? 'Swing';
+    const parsed = parseDiagnosisText(r.diagnosis_text);
     const title =
-      r.diagnosis_text?.split('.')[0]?.trim() ||
+      parsed.summary ||
       `종합 ${Math.round(Number(r.overall_score))}점`;
     return {
       id: r.id ?? r.session_id,
@@ -202,8 +184,6 @@ export async function fetchHomeDashboard(): Promise<HomeDashboard> {
     drillFallback = '이번 리포트에는 추천 드릴이 없어요.';
   }
 
-  const challenge = await fetchChallengeBanner(supabase);
-
   return {
     overallScore: Math.round(score),
     statusLabel: status.label,
@@ -213,88 +193,5 @@ export async function fetchHomeDashboard(): Promise<HomeDashboard> {
     recentReports,
     drill,
     drillFallback,
-    challenge,
-  };
-}
-
-async function fetchChallengeBanner(
-  supabase: NonNullable<ReturnType<typeof getSupabaseClient>>,
-): Promise<HomeChallengeBanner | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user?.id) {
-    return null;
-  }
-
-  const { data: mine, error } = await supabase
-    .from('user_challenges')
-    .select('id, challenge_id, progress, completed_at, joined_at')
-    .eq('user_id', user.id)
-    .is('completed_at', null)
-    .order('joined_at', { ascending: false })
-    .limit(8);
-
-  if (error) {
-    console.warn('[fetchHomeDashboard] challenges', error.message);
-  }
-
-  const activeMine = mine ?? [];
-  if (activeMine.length > 0) {
-    const ids = activeMine.map((r) => r.challenge_id);
-    const { data: challenges } = await supabase
-      .from('challenges')
-      .select('id, title, goal_count, is_active, type')
-      .in('id', ids)
-      .eq('is_active', true)
-      .eq('type', 'mission');
-
-    const byId = new Map(
-      (challenges ?? []).map((c) => [c.id as string, c]),
-    );
-    for (const row of activeMine) {
-      const ch = byId.get(row.challenge_id);
-      if (!ch) {
-        continue;
-      }
-      const goal = Number(ch.goal_count) || 1;
-      const progress = row.progress ?? 0;
-      const left = Math.max(0, goal - progress);
-      return {
-        challengeId: ch.id,
-        title: ch.title,
-        progress,
-        goalCount: goal,
-        progressLabel: `${progress}/${goal}`,
-        meta:
-          left > 0
-            ? `${left}회 남았어요 — 계속 이어가볼까요?`
-            : '목표에 거의 도달했어요',
-        completed: false,
-      };
-    }
-  }
-
-  const { data: open } = await supabase
-    .from('challenges')
-    .select('id, title, goal_count')
-    .eq('type', 'mission')
-    .eq('is_active', true)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!open) {
-    return null;
-  }
-
-  return {
-    challengeId: open.id,
-    title: open.title,
-    progress: 0,
-    goalCount: open.goal_count,
-    progressLabel: `0/${open.goal_count}`,
-    meta: '챌린지 탭에서 참여를 시작해 보세요',
-    completed: false,
   };
 }

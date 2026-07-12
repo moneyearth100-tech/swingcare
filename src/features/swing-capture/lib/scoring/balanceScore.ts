@@ -19,6 +19,7 @@ import {
   JOINT_WEIGHTS,
   BALANCE_SCORE_JOINTS,
   BALANCE_SCORE_VERSION,
+  JOINT_LABEL_KO,
   MAX_DEVIATION_DEG,
   PHASE_WEIGHTS,
   REFERENCE_ANGLE_DEG,
@@ -26,9 +27,19 @@ import {
   SCORE_BAND_GOOD,
   type BalanceScoreJoint,
 } from './balanceScoreConstants';
+import {
+  computeMovementMetrics,
+  type MovementMetrics,
+} from './movementMetrics';
 
 export type { BalanceScoreJoint } from './balanceScoreConstants';
-export { BALANCE_SCORE_VERSION, SCORE_BAND_CAUTION, SCORE_BAND_GOOD };
+export type { MovementMetrics } from './movementMetrics';
+export {
+  BALANCE_SCORE_VERSION,
+  JOINT_LABEL_KO,
+  SCORE_BAND_CAUTION,
+  SCORE_BAND_GOOD,
+};
 
 export interface JointBalanceScore {
   joint: BalanceScoreJoint;
@@ -42,6 +53,8 @@ export interface BalanceScoreResult {
   version: string;
   overallScore: number;
   joints: Record<BalanceScoreJoint, JointBalanceScore>;
+  /** load_score_v2 이동·코킹 지표 */
+  movementMetrics: MovementMetrics;
   /** 점수를 거의 못 뽑은 경우 안내 */
   warning: string | null;
 }
@@ -184,6 +197,7 @@ export function computeBalanceScore(
     version: BALANCE_SCORE_VERSION,
     overallScore,
     joints,
+    movementMetrics: computeMovementMetrics(frames, phases),
     warning,
   };
 }
@@ -191,9 +205,7 @@ export function computeBalanceScore(
 /** TEMP 오버레이/로그용 한 줄 요약 */
 export function formatBalanceScoreSummary(result: BalanceScoreResult): string {
   const parts = BALANCE_SCORE_JOINTS.map((j) => {
-    const label =
-      j === 'lower_back' ? '허리' : j === 'wrist' ? '손목' : '무릎';
-    return `${label} ${result.joints[j].score}`;
+    return `${JOINT_LABEL_KO[j]} ${result.joints[j].score}`;
   });
   return `종합 ${result.overallScore} · ${parts.join(' · ')}`;
 }

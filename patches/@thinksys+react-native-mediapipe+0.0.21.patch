@@ -1,0 +1,449 @@
+diff --git a/node_modules/@thinksys/react-native-mediapipe/android/build.gradle b/node_modules/@thinksys/react-native-mediapipe/android/build.gradle
+index eb884a5..8e17ce0 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/android/build.gradle
++++ b/node_modules/@thinksys/react-native-mediapipe/android/build.gradle
+@@ -129,6 +129,7 @@ dependencies {
+ 
+   // CameraX View class
+   implementation "androidx.camera:camera-view:$camerax_version"
++  implementation "androidx.camera:camera-video:$camerax_version"
+ 
+   // WindowManager
+   implementation 'androidx.window:window:1.1.0'
+diff --git a/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/MediaPipeNativeModule.java b/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/MediaPipeNativeModule.java
+index df38cc4..dd24f41 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/MediaPipeNativeModule.java
++++ b/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/MediaPipeNativeModule.java
+@@ -7,6 +7,7 @@ import androidx.appcompat.app.AppCompatActivity;
+ import com.facebook.react.bridge.ReactApplicationContext;
+ import com.facebook.react.bridge.ReactContextBaseJavaModule;
+ import com.facebook.react.bridge.ReactMethod;
++import com.facebook.react.bridge.Promise;
+ 
+ public class MediaPipeNativeModule extends ReactContextBaseJavaModule {
+ 
+@@ -37,4 +38,28 @@ public class MediaPipeNativeModule extends ReactContextBaseJavaModule {
+       Log.e("switchCameraMethod", "CameraFragment is not initialized");
+     }
+   }
++
++  @ReactMethod
++  public void startRecording(Promise promise) {
++    AppCompatActivity activity = (AppCompatActivity) getCurrentActivity();
++    if (activity == null || CameraFragmentManager.INSTANCE.getCameraFragment() == null) {
++      promise.reject("camera_unavailable", "Camera fragment is not initialized");
++      return;
++    }
++    activity.runOnUiThread(() ->
++      CameraFragmentManager.INSTANCE.getCameraFragment().startRecording(promise)
++    );
++  }
++
++  @ReactMethod
++  public void stopRecording(Promise promise) {
++    AppCompatActivity activity = (AppCompatActivity) getCurrentActivity();
++    if (activity == null || CameraFragmentManager.INSTANCE.getCameraFragment() == null) {
++      promise.reject("camera_unavailable", "Camera fragment is not initialized");
++      return;
++    }
++    activity.runOnUiThread(() ->
++      CameraFragmentManager.INSTANCE.getCameraFragment().stopRecording(promise)
++    );
++  }
+ }
+diff --git a/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt b/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt
+index 8b61fa3..1fe7557 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt
++++ b/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt
+@@ -17,11 +17,18 @@ import androidx.camera.core.Camera
+ import androidx.camera.core.CameraSelector
+ import androidx.camera.core.ImageAnalysis
+ import androidx.camera.core.ImageProxy
++import androidx.camera.core.MirrorMode
+ import androidx.camera.core.Preview
+ import androidx.camera.lifecycle.ProcessCameraProvider
++import androidx.camera.video.FileOutputOptions
++import androidx.camera.video.Recorder
++import androidx.camera.video.Recording
++import androidx.camera.video.VideoCapture
++import androidx.camera.video.VideoRecordEvent
+ import androidx.core.content.ContextCompat
+ import androidx.fragment.app.Fragment
+ import androidx.fragment.app.activityViewModels
++import com.facebook.react.bridge.Promise
+ import com.facebook.react.modules.core.DeviceEventManagerModule
+ import com.google.gson.Gson
+ import com.google.mediapipe.tasks.vision.core.RunningMode
+@@ -30,6 +37,7 @@ import com.tsmediapipe.MainViewModel
+ import com.tsmediapipe.PoseLandmarkerHelper
+ import com.tsmediapipe.ReactContextProvider
+ import com.tsmediapipe.databinding.FragmentMyCameraBinding
++import java.io.File
+ import java.util.concurrent.ExecutorService
+ import java.util.concurrent.Executors
+ import java.util.concurrent.TimeUnit
+@@ -50,6 +58,11 @@ class CameraFragment : Fragment(), PoseLandmarkerHelper.LandmarkerListener {
+   private val viewModel: MainViewModel by activityViewModels()
+   private var preview: Preview? = null
+   private var imageAnalyzer: ImageAnalysis? = null
++  private var videoCapture: VideoCapture<Recorder>? = null
++  private var activeRecording: Recording? = null
++  private var recordingFile: File? = null
++  private var startRecordingPromise: Promise? = null
++  private var stopRecordingPromise: Promise? = null
+   private var camera: Camera? = null
+   private var cameraProvider: ProcessCameraProvider? = null
+   private var cameraFacing = CameraSelector.LENS_FACING_FRONT
+@@ -211,11 +224,18 @@ class CameraFragment : Fragment(), PoseLandmarkerHelper.LandmarkerListener {
+           }
+         }
+ 
++    val recorder = Recorder.Builder().build()
++    videoCapture = VideoCapture.Builder(recorder)
++      .setTargetRotation(_fragmentCameraBinding?.viewFinder?.display?.rotation ?: 0)
++      // Store sensor orientation. SwingReview mirrors live landmarks to match.
++      .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
++      .build()
++
+     cameraProvider.unbindAll()
+ 
+     try {
+       camera = cameraProvider.bindToLifecycle(
+-        this, cameraSelector, preview, imageAnalyzer
++        this, cameraSelector, preview, imageAnalyzer, videoCapture
+       )
+ 
+       preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
+@@ -233,7 +253,73 @@ class CameraFragment : Fragment(), PoseLandmarkerHelper.LandmarkerListener {
+     }
+   }
+ 
++  @SuppressLint("MissingPermission")
++  fun startRecording(promise: Promise) {
++    if (activeRecording != null || startRecordingPromise != null) {
++      promise.reject("recording_active", "Recording is already active")
++      return
++    }
++    val output = videoCapture?.output
++    if (output == null || !isAdded) {
++      promise.reject("camera_unavailable", "Camera is not ready")
++      return
++    }
++
++    val file = File(requireContext().cacheDir, "swingcare_live_${System.currentTimeMillis()}.mp4")
++    recordingFile = file
++    startRecordingPromise = promise
++    val options = FileOutputOptions.Builder(file).build()
++
++    activeRecording = output.prepareRecording(requireContext(), options)
++      .start(ContextCompat.getMainExecutor(requireContext())) { event ->
++        when (event) {
++          is VideoRecordEvent.Start -> {
++            startRecordingPromise?.resolve(null)
++            startRecordingPromise = null
++          }
++          is VideoRecordEvent.Finalize -> {
++            val startPromise = startRecordingPromise
++            val stopPromise = stopRecordingPromise
++            startRecordingPromise = null
++            stopRecordingPromise = null
++            activeRecording = null
++
++            if (event.hasError()) {
++              val message = "Video recording failed (${event.error}): ${event.cause?.message ?: ""}"
++              startPromise?.reject("recording_failed", message, event.cause)
++              stopPromise?.reject("recording_failed", message, event.cause)
++            } else {
++              startPromise?.resolve(null)
++              val uri = event.outputResults.outputUri
++              stopPromise?.resolve(
++                if (uri.toString().isNotEmpty()) uri.toString()
++                else "file://${recordingFile?.absolutePath}"
++              )
++            }
++            recordingFile = null
++          }
++        }
++      }
++  }
++
++  fun stopRecording(promise: Promise) {
++    val recording = activeRecording
++    if (recording == null) {
++      promise.reject("recording_inactive", "No recording is active")
++      return
++    }
++    if (stopRecordingPromise != null) {
++      promise.reject("recording_stopping", "Recording is already stopping")
++      return
++    }
++    stopRecordingPromise = promise
++    recording.stop()
++  }
++
+   fun switchCamera() {
++    if (activeRecording != null) {
++      return
++    }
+     cameraFacing = if (cameraFacing == CameraSelector.LENS_FACING_BACK) {
+       CameraSelector.LENS_FACING_FRONT
+     } else {
+diff --git a/node_modules/@thinksys/react-native-mediapipe/ios/Services/CameraFeedService.swift b/node_modules/@thinksys/react-native-mediapipe/ios/Services/CameraFeedService.swift
+index 7c21b4a..054e66a 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/ios/Services/CameraFeedService.swift
++++ b/node_modules/@thinksys/react-native-mediapipe/ios/Services/CameraFeedService.swift
+@@ -111,6 +111,7 @@ class CameraFeedService: NSObject {
+     private var isSessionRunning = false
+     private var imageBufferSize: CGSize?
+     private var movieOutput: AVCaptureMovieFileOutput?
++    private var recordingCompletion: ((Result<URL, Error>) -> Void)?
+     var videoInput: AVAssetWriterInput?
+     private var _adpater: AVAssetWriterInputPixelBufferAdaptor?
+     private var _time: Double = 0
+@@ -468,33 +469,54 @@ class CameraFeedService: NSObject {
+     
+     
+     
+-    func startRecording(startRecording: Bool) {
+-        if !isReacordingStart {
+-            self.assetWriter = nil // Release reference
+-            self.videoInput = nil
+-            self._adpater = nil
+-            videoOutputURL = documentDirectory.appendingPathComponent(generateDynamicFileName())
+-            isReacordingStart = startRecording
++    func startRecording() throws {
++        guard let movieOutput = movieOutput, session.isRunning else {
++            throw NSError(
++                domain: "TsMediapipeRecording",
++                code: 1,
++                userInfo: [NSLocalizedDescriptionKey: "Camera session is not ready"]
++            )
++        }
++        guard !movieOutput.isRecording else {
++            throw NSError(
++                domain: "TsMediapipeRecording",
++                code: 2,
++                userInfo: [NSLocalizedDescriptionKey: "Recording is already active"]
++            )
+         }
+-    }
+-    
+ 
+-    func stopRecording() {
+-        if  isReacordingStart  {
+-            self.eventName = "Intro"
+-            isReacordingStart = false
+-            isTimerStart = false
+-            guard videoInput?.isReadyForMoreMediaData == true, assetWriter!.status != .failed else { return }
++        videoOutputURL = FileManager.default.temporaryDirectory
++            .appendingPathComponent(generateDynamicFileName())
++        try? FileManager.default.removeItem(at: videoOutputURL)
+ 
+-            videoInput?.markAsFinished()
+-            assetWriter?.finishWriting { [weak self] in
+-                guard let self = self else { return }
+-                self.assetWriter = nil // Release reference
+-                self.videoInput = nil
+-                self._adpater = nil
+-                print("Video recording finished.") // Or handle success/failure as needed
++        if let connection = movieOutput.connection(with: .video) {
++            if connection.isVideoOrientationSupported {
++                connection.videoOrientation = isPortrait ? .portrait : .landscapeRight
++            }
++            if connection.isVideoMirroringSupported {
++                connection.automaticallyAdjustsVideoMirroring = false
++                // Store sensor orientation. SwingReview mirrors live landmarks
++                // back to this unmirrored video coordinate system.
++                connection.isVideoMirrored = false
+             }
+         }
++
++        movieOutput.startRecording(to: videoOutputURL, recordingDelegate: self)
++    }
++
++    func stopRecording(
++        completion: @escaping (Result<URL, Error>) -> Void
++    ) {
++        guard let movieOutput = movieOutput, movieOutput.isRecording else {
++            completion(.failure(NSError(
++                domain: "TsMediapipeRecording",
++                code: 3,
++                userInfo: [NSLocalizedDescriptionKey: "No recording is active"]
++            )))
++            return
++        }
++        recordingCompletion = completion
++        movieOutput.stopRecording()
+     }
+     
+     
+@@ -549,7 +571,7 @@ class CameraFeedService: NSObject {
+             default:
+                 canResumeManually = false
+             }
+-            self.stopRecording()
++            self.stopRecording { _ in }
+             self.delegate?.sessionWasInterrupted(canResumeManually: canResumeManually)
+             
+         }
+@@ -916,11 +938,14 @@ extension CameraFeedService: AVCaptureFileOutputRecordingDelegate {
+     /** This method gets called when the output finished recording to a file.
+      */
+     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+-        // Handle recording finished event
++        let completion = recordingCompletion
++        recordingCompletion = nil
+         if let error = error {
+             print("Recording finished with error: \(error.localizedDescription)")
++            completion?(.failure(error))
+         } else {
+             print("Recording finished successfully.")
++            completion?(.success(outputFileURL))
+         }
+     }
+ }
+diff --git a/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.m b/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.m
+index be1d0bd..80bfdca 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.m
++++ b/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.m
+@@ -10,6 +10,10 @@ RCT_EXPORT_VIEW_PROPERTY(height, NSNumber)
+ RCT_EXPORT_VIEW_PROPERTY(onLandmark, RCTDirectEventBlock)
+ 
+ RCT_EXTERN_METHOD(switchCamera)
++RCT_EXTERN_METHOD(startRecording:(RCTPromiseResolveBlock)resolve
++                  rejecter:(RCTPromiseRejectBlock)reject)
++RCT_EXTERN_METHOD(stopRecording:(RCTPromiseResolveBlock)resolve
++                  rejecter:(RCTPromiseRejectBlock)reject)
+ 
+ RCT_EXPORT_VIEW_PROPERTY(face, BOOL)
+ RCT_EXPORT_VIEW_PROPERTY(leftArm, BOOL)
+diff --git a/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.swift b/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.swift
+index 1590e17..08e7d3b 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.swift
++++ b/node_modules/@thinksys/react-native-mediapipe/ios/TsMediapipeViewManager.swift
+@@ -20,5 +20,41 @@ class TsMediapipeViewManager: RCTViewManager {
+         cameraView?.switchCamera()
+     }
+ 
++    @objc func startRecording(
++        _ resolve: RCTPromiseResolveBlock,
++        rejecter reject: RCTPromiseRejectBlock
++    ) {
++        guard let cameraView = cameraView else {
++            reject("camera_unavailable", "Camera view is not ready", nil)
++            return
++        }
++        do {
++            try cameraView.startRecording()
++            resolve(nil)
++        } catch {
++            reject("recording_start_failed", error.localizedDescription, error)
++        }
++    }
++
++    @objc func stopRecording(
++        _ resolve: @escaping RCTPromiseResolveBlock,
++        rejecter reject: @escaping RCTPromiseRejectBlock
++    ) {
++        guard let cameraView = cameraView else {
++            reject("camera_unavailable", "Camera view is not ready", nil)
++            return
++        }
++        cameraView.stopRecording { result in
++            DispatchQueue.main.async {
++                switch result {
++                case .success(let url):
++                    resolve(url.absoluteString)
++                case .failure(let error):
++                    reject("recording_stop_failed", error.localizedDescription, error)
++                }
++            }
++        }
++    }
++    
+     
+ }
+diff --git a/node_modules/@thinksys/react-native-mediapipe/ios/ViewContoller/CameraView.swift b/node_modules/@thinksys/react-native-mediapipe/ios/ViewContoller/CameraView.swift
+index c9629cc..ee41c2e 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/ios/ViewContoller/CameraView.swift
++++ b/node_modules/@thinksys/react-native-mediapipe/ios/ViewContoller/CameraView.swift
+@@ -267,6 +267,16 @@ class CameraView: UIView {
+         cameraFeedService.switchCamera()
+     }
+ 
++    func startRecording() throws {
++        try cameraFeedService.startRecording()
++    }
++
++    func stopRecording(
++        completion: @escaping (Result<URL, Error>) -> Void
++    ) {
++        cameraFeedService.stopRecording(completion: completion)
++    }
++
+     override func willMove(toSuperview newSuperview: UIView?) {
+         if newSuperview == nil {
+             UIApplication.shared.isIdleTimerDisabled = false
+diff --git a/node_modules/@thinksys/react-native-mediapipe/lib/typescript/src/index.d.ts b/node_modules/@thinksys/react-native-mediapipe/lib/typescript/src/index.d.ts
+index 495edf5..7ac0dca 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/lib/typescript/src/index.d.ts
++++ b/node_modules/@thinksys/react-native-mediapipe/lib/typescript/src/index.d.ts
+@@ -22,6 +22,8 @@ type MediapipeComponentProps = TsMediapipeProps & {
+     style?: ViewStyle;
+ };
+ declare const switchCamera: any;
++declare const startCameraRecording: () => Promise<void>;
++declare const stopCameraRecording: () => Promise<string>;
+ declare const TsMediapipeView: React.FC<MediapipeComponentProps>;
+-export { TsMediapipeView as RNMediapipe, switchCamera };
++export { TsMediapipeView as RNMediapipe, switchCamera, startCameraRecording, stopCameraRecording };
+ //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@thinksys/react-native-mediapipe/src/index.tsx b/node_modules/@thinksys/react-native-mediapipe/src/index.tsx
+index c76f8fc..2210093 100644
+--- a/node_modules/@thinksys/react-native-mediapipe/src/index.tsx
++++ b/node_modules/@thinksys/react-native-mediapipe/src/index.tsx
+@@ -54,6 +54,32 @@ const switchCamera = isAndroid
+   ? MediaPipeNativeModule.switchCameraMethod
+   : TsMediapipeViewManager.switchCamera;
+ 
++const cameraRecordingModule = isAndroid
++  ? MediaPipeNativeModule
++  : TsMediapipeViewManager;
++
++const startCameraRecording = async (): Promise<void> => {
++  if (typeof cameraRecordingModule?.startRecording !== 'function') {
++    throw new Error(
++      'MediaPipe camera recording is unavailable. Rebuild the native app.'
++    );
++  }
++  await cameraRecordingModule.startRecording();
++};
++
++const stopCameraRecording = async (): Promise<string> => {
++  if (typeof cameraRecordingModule?.stopRecording !== 'function') {
++    throw new Error(
++      'MediaPipe camera recording is unavailable. Rebuild the native app.'
++    );
++  }
++  const uri = await cameraRecordingModule.stopRecording();
++  if (typeof uri !== 'string' || uri.length === 0) {
++    throw new Error('MediaPipe camera recording returned no file.');
++  }
++  return uri;
++};
++
+ const TsMediapipe =
+   UIManager.getViewManagerConfig(ComponentName) != null
+     ? requireNativeComponent<TsMediapipeProps>(ComponentName)
+@@ -148,4 +174,9 @@ const TsMediapipeView: React.FC<MediapipeComponentProps> = (props) => {
+   );
+ };
+ 
+-export { TsMediapipeView as RNMediapipe, switchCamera };
++export {
++  TsMediapipeView as RNMediapipe,
++  switchCamera,
++  startCameraRecording,
++  stopCameraRecording,
++};

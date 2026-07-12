@@ -94,7 +94,8 @@ export async function saveAnalysisResult(input: {
   durationMs: number;
   fps: number;
   overallScore: number;
-  jointScores: { lower_back: number; wrist: number; knee: number };
+  jointScores: Record<string, number>;
+  movementMetrics?: Record<string, number | null> | null;
   issuePhase: string | null;
   diagnosisText: string | null;
   recommendedDrillId: string | null;
@@ -124,6 +125,7 @@ export async function saveAnalysisResult(input: {
       user_id: input.userId,
       overall_score: input.overallScore,
       joint_scores: input.jointScores,
+      movement_metrics: input.movementMetrics ?? null,
       issue_phase: input.issuePhase,
       diagnosis_text: input.diagnosisText,
       recommended_drill_id: input.recommendedDrillId,

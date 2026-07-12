@@ -1,9 +1,9 @@
 /**
- * 업로드 스윙 영상 재생 + LandmarkFrame 스켈레톤 오버레이.
+ * 스윙 영상(+스켈레톤) 또는 실시간 좌표만 스켈레톤 리뷰.
  */
 
 import { useEventListener } from 'expo';
-import { useFocusEffect, useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams, router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -182,6 +182,10 @@ export default function SwingReviewScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  /** 영상 없이 좌표만 재생 */
+  const [skeletonOnly, setSkeletonOnly] = useState(false);
+  /** 전면 카메라 좌표를 저장 영상 방향에 맞춰 좌우 보정 */
+  const [mirrorSkeleton, setMirrorSkeleton] = useState(false);
   const [frames, setFrames] = useState<LandmarkFrame[]>([]);
   const [phases, setPhases] = useState<PhaseMarker[]>([]);
   const [hint, setHint] = useState<string | null>(null);
@@ -192,6 +196,10 @@ export default function SwingReviewScreen() {
   const framesRef = useRef<LandmarkFrame[]>([]);
   framesRef.current = frames;
   const playbackRateRef = useRef(RATE_DEFAULT);
+  const skeletonTimeMsRef = useRef(0);
+  const skeletonRafRef = useRef<number | null>(null);
+  const skeletonLastTickRef = useRef<number | null>(null);
+  const durationMsRef = useRef(0);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
@@ -204,7 +212,7 @@ export default function SwingReviewScreen() {
     (rate: number) => {
       const next = clampRate(rate);
       playbackRateRef.current = next;
-      if (!player) {
+      if (!player || skeletonOnly) {
         return;
       }
       try {
@@ -217,8 +225,61 @@ export default function SwingReviewScreen() {
         console.warn('[SwingReview] playbackRate', e);
       }
     },
-    [player],
+    [player, skeletonOnly],
   );
+
+  const applyFrameAtMs = useCallback(
+    (timeMs: number) => {
+      const list = framesRef.current;
+      if (list.length === 0 || layout.width <= 0 || layout.height <= 0) {
+        return;
+      }
+      const index = nearestFrameIndex(list, timeMs);
+      if (index < 0) {
+        return;
+      }
+      const frame = list[index];
+      const landmarks = mirrorSkeleton
+        ? frame.landmarks.map((point) => ({ ...point, x: 1 - point.x }))
+        : frame.landmarks;
+      pointsSV.value = packPosePoints(landmarks, {
+        viewWidth: layout.width,
+        viewHeight: layout.height,
+        imageWidth: layout.width,
+        imageHeight: layout.height,
+      });
+    },
+    [layout.height, layout.width, mirrorSkeleton, pointsSV],
+  );
+
+  const stopSkeletonLoop = useCallback(() => {
+    if (skeletonRafRef.current != null) {
+      cancelAnimationFrame(skeletonRafRef.current);
+      skeletonRafRef.current = null;
+    }
+    skeletonLastTickRef.current = null;
+  }, []);
+
+  const tickSkeleton = useCallback(() => {
+    const now = Date.now();
+    const last = skeletonLastTickRef.current ?? now;
+    skeletonLastTickRef.current = now;
+    const dt = (now - last) * playbackRateRef.current;
+    const duration = Math.max(1, durationMsRef.current);
+    let next = skeletonTimeMsRef.current + dt;
+    if (next >= duration) {
+      next = next % duration;
+    }
+    skeletonTimeMsRef.current = next;
+    applyFrameAtMs(next);
+    skeletonRafRef.current = requestAnimationFrame(tickSkeleton);
+  }, [applyFrameAtMs]);
+
+  const startSkeletonLoop = useCallback(() => {
+    stopSkeletonLoop();
+    skeletonLastTickRef.current = Date.now();
+    skeletonRafRef.current = requestAnimationFrame(tickSkeleton);
+  }, [stopSkeletonLoop, tickSkeleton]);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,6 +291,13 @@ export default function SwingReviewScreen() {
       }
       setLoading(true);
       setError(null);
+      setSignedUrl(null);
+      setFrames([]);
+      setPhases([]);
+      setHint(null);
+      setSkeletonOnly(false);
+      setMirrorSkeleton(false);
+      skeletonTimeMsRef.current = 0;
       try {
         const session = await fetchSwingPlaybackSession(sessionId);
         if (cancelled) {
@@ -246,18 +314,7 @@ export default function SwingReviewScreen() {
           setError('아직 분석 중이에요. 완료된 뒤 다시 열어 주세요.');
           return;
         }
-        if (!session.videoUrl) {
-          setError('재생할 영상이 없어요');
-          return;
-        }
-        const url = await createSwingVideoSignedUrl(session.videoUrl);
-        if (cancelled) {
-          return;
-        }
-        if (!url) {
-          setError('영상 URL을 만들지 못했어요');
-          return;
-        }
+
         setFrames(session.frames);
         const resolvedPhases =
           session.phases.length > 0
@@ -266,13 +323,43 @@ export default function SwingReviewScreen() {
               ? segmentSwingPhases(session.frames).phases
               : [];
         setPhases(resolvedPhases);
-        setSignedUrl(url);
-        if (session.frames.length === 0) {
-          setHint('좌표 프레임이 없어 영상만 재생해요');
-        } else if (resolvedPhases.length === 0) {
-          setHint('구간(어드레스~피니시) 정보가 없어요');
+
+        const frameDuration =
+          session.frames.length > 0
+            ? Math.max(
+                session.durationMs,
+                session.frames[session.frames.length - 1]?.timestampMs ?? 0,
+              )
+            : session.durationMs;
+        durationMsRef.current = Math.max(frameDuration, 1);
+
+        if (session.videoUrl) {
+          const url = await createSwingVideoSignedUrl(session.videoUrl);
+          if (cancelled) {
+            return;
+          }
+          if (!url) {
+            setError('영상 URL을 만들지 못했어요');
+            return;
+          }
+          setSignedUrl(url);
+          setSkeletonOnly(false);
+          setMirrorSkeleton(session.captureMode === 'live');
+          if (session.frames.length === 0) {
+            setHint('좌표 프레임이 없어 영상만 재생해요');
+          } else if (resolvedPhases.length === 0) {
+            setHint('구간(어드레스~피니시) 정보가 없어요');
+          } else {
+            setHint(null);
+          }
+        } else if (session.frames.length > 0) {
+          setSignedUrl(null);
+          setSkeletonOnly(true);
+          setMirrorSkeleton(false);
+          setHint('저장된 스윙 좌표를 스켈레톤으로 재생해요');
         } else {
-          setHint(null);
+          setError('재생할 영상이 없어요');
+          return;
         }
       } catch (e) {
         if (!cancelled) {
@@ -286,11 +373,12 @@ export default function SwingReviewScreen() {
     })();
     return () => {
       cancelled = true;
+      stopSkeletonLoop();
     };
-  }, [sessionId]);
+  }, [sessionId, stopSkeletonLoop]);
 
   useEffect(() => {
-    if (!signedUrl || !player) {
+    if (!signedUrl || !player || skeletonOnly) {
       return;
     }
     try {
@@ -302,34 +390,45 @@ export default function SwingReviewScreen() {
     } catch (e) {
       console.warn('[SwingReview] replace', e);
     }
-  }, [signedUrl, player]);
+  }, [signedUrl, player, skeletonOnly]);
 
-  const applyFrameAtMs = useCallback(
-    (timeMs: number) => {
-      const list = framesRef.current;
-      if (list.length === 0 || layout.width <= 0 || layout.height <= 0) {
-        return;
-      }
-      const index = nearestFrameIndex(list, timeMs);
-      if (index < 0) {
-        return;
-      }
-      const frame = list[index];
-      pointsSV.value = packPosePoints(frame.landmarks, {
-        viewWidth: layout.width,
-        viewHeight: layout.height,
-        imageWidth: layout.width,
-        imageHeight: layout.height,
-      });
-    },
-    [layout.height, layout.width, pointsSV],
-  );
+  // 스켈레톤 전용: 로드·레이아웃 준비되면 자동 재생
+  useEffect(() => {
+    if (!skeletonOnly || loading || error || frames.length === 0) {
+      return;
+    }
+    if (layout.width <= 0 || layout.height <= 0) {
+      return;
+    }
+    applyFrameAtMs(0);
+    setPlaying(true);
+    startSkeletonLoop();
+    return () => {
+      stopSkeletonLoop();
+    };
+  }, [
+    skeletonOnly,
+    loading,
+    error,
+    frames.length,
+    layout.width,
+    layout.height,
+    applyFrameAtMs,
+    startSkeletonLoop,
+    stopSkeletonLoop,
+  ]);
 
   useEventListener(player, 'timeUpdate', ({ currentTime }) => {
+    if (skeletonOnly) {
+      return;
+    }
     applyFrameAtMs(currentTime * 1000);
   });
 
   useEventListener(player, 'playingChange', ({ isPlaying }) => {
+    if (skeletonOnly) {
+      return;
+    }
     setPlaying(isPlaying);
   });
 
@@ -339,6 +438,16 @@ export default function SwingReviewScreen() {
   };
 
   const togglePlay = () => {
+    if (skeletonOnly) {
+      if (playing) {
+        stopSkeletonLoop();
+        setPlaying(false);
+      } else {
+        setPlaying(true);
+        startSkeletonLoop();
+      }
+      return;
+    }
     if (!player) {
       return;
     }
@@ -349,35 +458,21 @@ export default function SwingReviewScreen() {
     }
   };
 
-  const stopPlayback = useCallback(() => {
+  const onClose = () => {
+    stopSkeletonLoop();
     try {
-      player.pause();
-      player.replace(null);
-    } catch (e) {
-      console.warn('[SwingReview] stopPlayback', e);
+      player?.pause();
+    } catch {
+      // ignore
     }
-    setPlaying(false);
-  }, [player]);
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/capture');
+    }
+  };
 
-  const onClose = useCallback(() => {
-    stopPlayback();
-    router.back();
-  }, [stopPlayback]);
-
-  // 화면 이탈·언마운트 시 백그라운드 재생 방지
-  useFocusEffect(
-    useCallback(() => {
-      return () => {
-        stopPlayback();
-      };
-    }, [stopPlayback]),
-  );
-
-  useEffect(() => {
-    return () => {
-      stopPlayback();
-    };
-  }, [stopPlayback]);
+  const showStage = !loading && !error && (signedUrl != null || skeletonOnly);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -399,16 +494,20 @@ export default function SwingReviewScreen() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {!loading && !error && signedUrl ? (
+      {showStage ? (
         <>
           <View style={styles.stageWrap}>
             <View style={styles.stage} onLayout={onLayout}>
-              <VideoView
-                style={StyleSheet.absoluteFill}
-                player={player}
-                contentFit="cover"
-                nativeControls={false}
-              />
+              {signedUrl ? (
+                <VideoView
+                  style={StyleSheet.absoluteFill}
+                  player={player}
+                  contentFit="cover"
+                  nativeControls={false}
+                />
+              ) : (
+                <View style={[StyleSheet.absoluteFill, styles.skeletonStage]} />
+              )}
               {layout.width > 0 && layout.height > 0 && frames.length > 0 ? (
                 <View style={StyleSheet.absoluteFill} pointerEvents="none">
                   <SkeletonOverlay
@@ -450,6 +549,7 @@ export default function SwingReviewScreen() {
                 ? `스켈레톤 ${frames.length}프레임`
                 : '스켈레톤 없음'}
               {phases.length > 0 ? ` · 구간 ${phases.length}` : ''}
+              {skeletonOnly ? ' · 영상 없음' : ''}
             </Text>
           </View>
         </>
@@ -503,6 +603,9 @@ const styles = StyleSheet.create({
     width: '100%',
     backgroundColor: '#000',
     overflow: 'hidden',
+  },
+  skeletonStage: {
+    backgroundColor: '#161822',
   },
   phaseOverlay: {
     position: 'absolute',

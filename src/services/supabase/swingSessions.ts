@@ -4,6 +4,7 @@
  */
 
 import type {
+  CameraAngle,
   LandmarkFrame,
   PhaseMarker,
   SwingSession,
@@ -25,6 +26,7 @@ export interface SwingSessionRow {
   fps: number;
   frames: LandmarkFrame[];
   phases: PhaseMarker[];
+  camera_angle?: CameraAngle;
 }
 
 export function toSwingSessionRow(session: SwingSession): SwingSessionRow {
@@ -40,6 +42,7 @@ export function toSwingSessionRow(session: SwingSession): SwingSessionRow {
     fps: session.deviceInfo.fps,
     frames: session.frames,
     phases: session.phases,
+    camera_angle: session.cameraAngle ?? 'unknown',
   };
 }
 
@@ -55,6 +58,7 @@ export function fromSwingSessionRow(row: SwingSessionRow): SwingSession {
       platform: row.platform,
       fps: row.fps,
     },
+    cameraAngle: row.camera_angle ?? 'unknown',
   };
 }
 

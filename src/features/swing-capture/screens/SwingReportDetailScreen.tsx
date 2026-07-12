@@ -21,14 +21,28 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   DIAGNOSIS_TEMPLATES,
+  parseDiagnosisText,
+  PHASE_LABEL_KO,
 } from '../lib/scoring/diagnosisTemplates';
+import {
+  BALANCE_SCORE_JOINTS,
+  JOINT_LABEL_KO,
+  SCORE_BAND_CAUTION,
+  type BalanceScoreJoint,
+} from '../lib/scoring/balanceScoreConstants';
+import {
+  movementDeltaBandLabel,
+} from '../lib/scoring/movementMetrics';
 import { extractCoachingClip } from '../../../services/supabase/coaching';
 import {
   fetchSwingReportBySessionId,
   type SwingReportRow,
 } from '../../../services/supabase/swingReports';
-import { fetchSwingSessionVideoMeta } from '../../../services/supabase/swingPlayback';
+import {
+  fetchSwingSessionVideoMeta,
+} from '../../../services/supabase/swingPlayback';
 import { attachVideoToSwingSession } from '../../../services/supabase/swingUpload';
+import SwingVideoThumb from '../components/SwingVideoThumb';
 
 async function pickCoachingVideo(): Promise<{
   uri: string;
@@ -75,29 +89,61 @@ async function pickCoachingVideo(): Promise<{
   }
 }
 
-function jointLabel(key: string): string {
-  if (key === 'lower_back') return '허리';
-  if (key === 'wrist') return '손목';
-  if (key === 'knee') return '무릎';
+function jointLabel(key: BalanceScoreJoint | string): string {
+  if (key in JOINT_LABEL_KO) {
+    return JOINT_LABEL_KO[key as BalanceScoreJoint];
+  }
   return key;
+}
+
+/** v1(3키)·v2(5키) 모두 — 값이 있는 관절만 순서대로 */
+function orderedJointEntries(
+  scores: SwingReportRow['joint_scores'],
+): { key: BalanceScoreJoint; value: number }[] {
+  const entries: { key: BalanceScoreJoint; value: number }[] = [];
+  for (const key of BALANCE_SCORE_JOINTS) {
+    const value = scores?.[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      entries.push({ key, value });
+    }
+  }
+  // v1에만 있고 목록에 없는 키는 없음 — 혹시 모를 추가 키
+  if (scores) {
+    for (const [key, value] of Object.entries(scores)) {
+      if (
+        typeof value === 'number' &&
+        Number.isFinite(value) &&
+        !BALANCE_SCORE_JOINTS.includes(key as BalanceScoreJoint)
+      ) {
+        entries.push({ key: key as BalanceScoreJoint, value });
+      }
+    }
+  }
+  return entries;
+}
+
+function formatDelta(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) {
+    return '—';
+  }
+  return value.toFixed(3);
+}
+
+function formatDeg(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) {
+    return '—';
+  }
+  return `${value.toFixed(1)}°`;
 }
 
 function resolveTag(report: SwingReportRow): string {
   if (!report.issue_phase) {
     return DIAGNOSIS_TEMPLATES.overall_good.tagLabel;
   }
-  const phaseKo: Record<string, string> = {
-    address: '어드레스',
-    toe_up: '토우업',
-    mid_backswing: '백스윙중',
-    top: '탑',
-    mid_downswing: '다운스윙 초반',
-    impact: '임팩트',
-    mid_follow_through: '팔로우중',
-    finish: '피니시',
-  };
-  const label = phaseKo[report.issue_phase] ?? report.issue_phase;
-  return `문제 구간 · ${label}`;
+  const label =
+    PHASE_LABEL_KO[report.issue_phase as keyof typeof PHASE_LABEL_KO] ??
+    report.issue_phase;
+  return `살펴볼 구간 · ${label}`;
 }
 
 export default function SwingReportDetailScreen() {
@@ -110,7 +156,15 @@ export default function SwingReportDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hasPlayableVideo, setHasPlayableVideo] = useState(false);
+  const [hasReviewFrames, setHasReviewFrames] = useState(false);
+  const [storageVideoUrl, setStorageVideoUrl] = useState<string | null>(null);
+  const [storageThumbnailUrl, setStorageThumbnailUrl] = useState<string | null>(
+    null,
+  );
   const [videoLabel, setVideoLabel] = useState('스윙 영상');
+  const [videoMetaLine, setVideoMetaLine] = useState(
+    '탭하여 재생 · 스켈레톤 함께 표시',
+  );
   const [extracting, setExtracting] = useState(false);
 
   const load = useCallback(async () => {
@@ -129,17 +183,35 @@ export default function SwingReportDetailScreen() {
       setError('리포트를 불러오지 못했습니다.');
       setReport(null);
       setHasPlayableVideo(false);
+      setHasReviewFrames(false);
+      setStorageVideoUrl(null);
+      setStorageThumbnailUrl(null);
     } else {
       setReport(row);
-      setHasPlayableVideo(Boolean(media?.videoUrl));
+      const path = media?.videoUrl ?? null;
+      const thumb = media?.thumbnailUrl ?? null;
+      setStorageVideoUrl(path);
+      setStorageThumbnailUrl(thumb);
+      setHasPlayableVideo(Boolean(path));
+      setHasReviewFrames(Boolean(media?.hasFrames));
       if (media?.captureMode === 'upload') {
         setVideoLabel('업로드 스윙 영상');
+        setVideoMetaLine('탭하여 재생 · 스켈레톤 함께 표시');
       } else if (media?.captureMode === 'live') {
-        setVideoLabel(
-          media?.videoUrl ? '실시간 스윙 영상' : '실시간 촬영 · 코칭 시 영상 첨부',
-        );
+        if (path) {
+          setVideoLabel('실시간 스윙 영상');
+          setVideoMetaLine('탭하여 재생 · 스켈레톤 함께 표시');
+        } else {
+          setVideoLabel('실시간 스윙 스켈레톤');
+          setVideoMetaLine('탭하여 재생 · 저장된 스켈레톤 표시');
+        }
       } else {
-        setVideoLabel('스윙 영상');
+        setVideoLabel(path ? '스윙 영상' : '스윙 스켈레톤');
+        setVideoMetaLine(
+          path
+            ? '탭하여 재생 · 스켈레톤 함께 표시'
+            : '탭하여 재생 · 저장된 스켈레톤 표시',
+        );
       }
     }
     setLoading(false);
@@ -181,7 +253,7 @@ export default function SwingReportDetailScreen() {
             { paddingBottom: insets.bottom + 28 },
           ]}
         >
-          {hasPlayableVideo && sessionId ? (
+          {(hasPlayableVideo || hasReviewFrames) && sessionId ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`${videoLabel} 재생`}
@@ -191,25 +263,30 @@ export default function SwingReportDetailScreen() {
                 pressed && styles.pressed,
               ]}
             >
-              <View style={styles.videoThumb}>
-                <Text style={styles.videoPlay}>▶</Text>
-              </View>
+              {hasPlayableVideo ? (
+                <SwingVideoThumb
+                  videoUrl={storageVideoUrl}
+                  thumbnailUrl={storageThumbnailUrl}
+                />
+              ) : (
+                <View style={styles.videoThumb}>
+                  <Text style={styles.videoPlay}>▶</Text>
+                </View>
+              )}
               <View style={{ flex: 1 }}>
                 <Text style={styles.videoTitle}>{videoLabel}</Text>
-                <Text style={styles.videoMeta}>
-                  탭하여 재생 · 스켈레톤 함께 표시
-                </Text>
+                <Text style={styles.videoMeta}>{videoMetaLine}</Text>
               </View>
             </Pressable>
           ) : (
             <View style={[styles.videoCard, styles.videoCardMuted]}>
               <View style={styles.videoThumb}>
-                <Text style={styles.videoPlay}>＋</Text>
+                <Text style={styles.videoPlay}>—</Text>
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.videoTitle}>{videoLabel}</Text>
+                <Text style={styles.videoTitle}>리뷰 데이터 없음</Text>
                 <Text style={styles.videoMeta}>
-                  코치에게 보내기 시 같은 스윙 영상을 선택해요
+                  재생할 영상이나 스켈레톤 좌표가 없어요
                 </Text>
               </View>
             </View>
@@ -217,18 +294,42 @@ export default function SwingReportDetailScreen() {
 
           <View style={styles.diagnosisBox}>
             <Text style={styles.diagnosisTag}>{resolveTag(report)}</Text>
-            <Text style={styles.diagnosisBody}>
-              {report.diagnosis_text ?? '인사이트 문구가 없습니다.'}
-            </Text>
+            {(() => {
+              const parsed = parseDiagnosisText(report.diagnosis_text);
+              if (parsed.legacy || !parsed.summary) {
+                return (
+                  <Text style={styles.diagnosisBody}>
+                    {report.diagnosis_text ?? '인사이트 문구가 없습니다.'}
+                  </Text>
+                );
+              }
+              return (
+                <View style={styles.diagnosisStructured}>
+                  <Text style={styles.diagnosisBody}>{parsed.summary}</Text>
+                  {parsed.facts.length > 0 ? (
+                    <View style={styles.factBlock}>
+                      <Text style={styles.factHeading}>이번 스윙에서 눈에 띈 점</Text>
+                      {parsed.facts.map((fact) => (
+                        <Text key={fact} style={styles.factLine}>
+                          · {fact}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : null}
+                  {parsed.next ? (
+                    <Text style={styles.nextLine}>{parsed.next}</Text>
+                  ) : null}
+                </View>
+              );
+            })()}
           </View>
 
           <View style={styles.card}>
             <Text style={styles.cardTitle}>
               스윙 밸런스 지수 상세 · 종합 {report.overall_score}
             </Text>
-            {(['lower_back', 'wrist', 'knee'] as const).map((key) => {
-              const value = report.joint_scores[key];
-              const warn = value < 50;
+            {orderedJointEntries(report.joint_scores).map(({ key, value }) => {
+              const warn = value < SCORE_BAND_CAUTION;
               return (
                 <View key={key} style={styles.loadBar}>
                   <View style={styles.loadBarTop}>
@@ -251,6 +352,68 @@ export default function SwingReportDetailScreen() {
               );
             })}
           </View>
+
+          {report.movement_metrics ? (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>이동 지표</Text>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>체중 이동량</Text>
+                <View style={styles.metricRight}>
+                  <Text style={styles.metricValue}>
+                    {formatDelta(report.movement_metrics.weightShiftDelta)}
+                  </Text>
+                  {movementDeltaBandLabel(
+                    report.movement_metrics.weightShiftDelta,
+                  ) ? (
+                    <Text style={styles.metricBand}>
+                      {movementDeltaBandLabel(
+                        report.movement_metrics.weightShiftDelta,
+                      )}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>머리 이동량</Text>
+                <View style={styles.metricRight}>
+                  <Text style={styles.metricValue}>
+                    {formatDelta(report.movement_metrics.headRiseDelta)}
+                  </Text>
+                  {movementDeltaBandLabel(
+                    report.movement_metrics.headRiseDelta,
+                  ) ? (
+                    <Text style={styles.metricBand}>
+                      {movementDeltaBandLabel(
+                        report.movement_metrics.headRiseDelta,
+                      )}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+
+              <View style={styles.cockingHead}>
+                <Text style={styles.metricLabel}>손목 코킹 (탑)</Text>
+                <View style={styles.refBadge}>
+                  <Text style={styles.refBadgeText}>참고용</Text>
+                </View>
+              </View>
+              <Text style={styles.cockingHint}>
+                촬영 각도(정면)에 따라 수치가 달라질 수 있어요
+              </Text>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>오른쪽</Text>
+                <Text style={styles.metricValuePrimary}>
+                  {formatDeg(report.movement_metrics.rightWristCockingDeg)}
+                </Text>
+              </View>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabelMuted}>왼쪽</Text>
+                <Text style={styles.metricValueMuted}>
+                  {formatDeg(report.movement_metrics.leftWristCockingDeg)}
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           {report.recommended_drill_id ? (
             <View style={styles.card}>
@@ -286,6 +449,7 @@ export default function SwingReportDetailScreen() {
                       return;
                     }
                     setHasPlayableVideo(true);
+                    setStorageVideoUrl(attached.videoUrl);
                     setVideoLabel('실시간 스윙 영상');
                     ready = true;
                   }
@@ -420,6 +584,32 @@ const styles = StyleSheet.create({
     color: '#232630',
     lineHeight: 20,
   },
+  diagnosisStructured: {
+    gap: 10,
+  },
+  factBlock: {
+    gap: 4,
+    paddingTop: 2,
+  },
+  factHeading: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#E85A7A',
+    marginBottom: 2,
+  },
+  factLine: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#3A4254',
+    lineHeight: 18,
+  },
+  nextLine: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#232630',
+    lineHeight: 18,
+    marginTop: 2,
+  },
   card: {
     backgroundColor: 'rgba(255,255,255,0.92)',
     borderRadius: 20,
@@ -461,6 +651,73 @@ const styles = StyleSheet.create({
   },
   loadFillWarn: {
     backgroundColor: '#FF758C',
+  },
+  metricRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  metricLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#232630',
+  },
+  metricLabelMuted: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#7A8198',
+  },
+  metricRight: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  metricValue: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#232630',
+    fontVariant: ['tabular-nums'],
+  },
+  metricValuePrimary: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#232630',
+    fontVariant: ['tabular-nums'],
+  },
+  metricValueMuted: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#7A8198',
+    fontVariant: ['tabular-nums'],
+  },
+  metricBand: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#7A8198',
+  },
+  cockingHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  refBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(122,129,152,0.14)',
+  },
+  refBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#5A6478',
+  },
+  cockingHint: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#7A8198',
+    lineHeight: 16,
+    marginTop: -4,
   },
   drillId: {
     fontSize: 13,

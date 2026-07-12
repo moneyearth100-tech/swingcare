@@ -1,5 +1,5 @@
 /**
- * 홈 탭 — swing_reports / drills / user_challenges 실데이터.
+ * 홈 탭 — swing_reports / drills 실데이터.
  */
 
 import { router, useFocusEffect } from 'expo-router';
@@ -22,6 +22,10 @@ import {
   fetchHomeDashboard,
   type HomeDashboard,
 } from '@/services/supabase/homeDashboard';
+import {
+  BALANCE_SCORE_JOINTS,
+  JOINT_LABEL_KO,
+} from '@/features/swing-capture/lib/scoring/balanceScoreConstants';
 
 const EMPTY_DASH: HomeDashboard = {
   overallScore: null,
@@ -29,15 +33,14 @@ const EMPTY_DASH: HomeDashboard = {
   statusTone: 'empty',
   heroDesc:
     '아직 스윙 리포트가 없어요.\n실시간 촬영이나 영상 업로드로 시작해 보세요.',
-  joints: [
-    { label: '허리', value: null, warn: false },
-    { label: '손목', value: null, warn: false },
-    { label: '무릎', value: null, warn: false },
-  ],
+  joints: BALANCE_SCORE_JOINTS.map((key) => ({
+    label: JOINT_LABEL_KO[key],
+    value: null,
+    warn: false,
+  })),
   recentReports: [],
   drill: null,
   drillFallback: '리포트가 쌓이면 맞춤 드릴을 추천해 드려요.',
-  challenge: null,
 };
 
 export default function HomeScreen() {
@@ -247,20 +250,6 @@ export default function HomeScreen() {
             </Text>
           </View>
         )}
-
-        {dash.challenge ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => router.push('/challenge')}
-            style={[styles.gcard, { marginTop: 6 }]}
-          >
-            <Text style={styles.gcardTag}>
-              Challenge · {dash.challenge.progressLabel}
-            </Text>
-            <Text style={styles.gcardTitle}>{dash.challenge.title}</Text>
-            <Text style={styles.gcardMeta}>{dash.challenge.meta}</Text>
-          </Pressable>
-        ) : null}
       </ScrollView>
     </View>
   );
@@ -387,20 +376,22 @@ const styles = StyleSheet.create({
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginHorizontal: 34,
+    marginHorizontal: 18,
     marginBottom: 26,
+    gap: 4,
   },
   statItem: {
     alignItems: 'center',
+    flex: 1,
   },
   statLabel: {
-    fontSize: 11.5,
+    fontSize: 10.5,
     fontWeight: '700',
     color: '#7A8198',
     marginBottom: 6,
   },
   statVal: {
-    fontSize: 24,
+    fontSize: 18,
     fontWeight: '800',
     color: '#232630',
   },

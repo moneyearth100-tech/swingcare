@@ -7,14 +7,20 @@ import {
   BALANCE_SCORE_JOINTS,
   type BalanceScoreJoint,
 } from '../../features/swing-capture/lib/scoring/balanceScoreConstants';
+import type { MovementMetrics } from '../../features/swing-capture/lib/scoring/movementMetrics';
 
 import { getSupabaseClient, isSupabaseConfigured } from './client';
 
-export interface SwingReportJointScores {
-  lower_back: number;
-  wrist: number;
-  knee: number;
-}
+/** v1은 3키, v2+는 5키 — 읽기 시 optional */
+export type SwingReportJointScores = Partial<
+  Record<BalanceScoreJoint, number>
+> & {
+  lower_back?: number;
+  wrist?: number;
+  knee?: number;
+  shoulder?: number;
+  hip?: number;
+};
 
 export interface SwingReportRow {
   id?: string;
@@ -26,6 +32,7 @@ export interface SwingReportRow {
   diagnosis_text: string | null;
   recommended_drill_id: string | null;
   scoring_version: string;
+  movement_metrics?: MovementMetrics | null;
   created_at?: string;
 }
 
@@ -34,9 +41,9 @@ export type UpsertSwingReportResult =
   | { ok: false; reason: 'not_configured' | 'error'; message: string };
 
 function toJointScores(result: BalanceScoreResult): SwingReportJointScores {
-  const scores = {} as SwingReportJointScores;
+  const scores: SwingReportJointScores = {};
   for (const joint of BALANCE_SCORE_JOINTS) {
-    scores[joint as BalanceScoreJoint] = result.joints[joint].score;
+    scores[joint] = result.joints[joint].score;
   }
   return scores;
 }
@@ -75,6 +82,7 @@ export async function upsertSwingReport(input: {
     diagnosis_text: input.diagnosisText ?? null,
     recommended_drill_id: input.recommendedDrillId ?? null,
     scoring_version: input.balanceScore.version,
+    movement_metrics: input.balanceScore.movementMetrics,
   };
 
   const { error } = await supabase
@@ -104,7 +112,7 @@ export async function fetchSwingReportBySessionId(
   const { data, error } = await supabase
     .from('swing_reports')
     .select(
-      'id, session_id, user_id, overall_score, joint_scores, issue_phase, diagnosis_text, recommended_drill_id, scoring_version, created_at',
+      'id, session_id, user_id, overall_score, joint_scores, issue_phase, diagnosis_text, recommended_drill_id, scoring_version, movement_metrics, created_at',
     )
     .eq('session_id', sessionId)
     .maybeSingle();

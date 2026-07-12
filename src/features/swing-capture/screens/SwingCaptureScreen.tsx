@@ -1,10 +1,16 @@
 /** 카메라 프리뷰 + MediaPipe 포즈 + Skia 스켈레톤 + 스윙 녹화 버퍼 */
 
 import { router, useLocalSearchParams, useNavigation } from 'expo-router';
-import { RNMediapipe } from '@thinksys/react-native-mediapipe';
+import {
+  RNMediapipe,
+  startCameraRecording,
+  stopCameraRecording,
+} from '@thinksys/react-native-mediapipe';
 import * as Device from 'expo-device';
+import { File } from 'expo-file-system';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -18,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabInset } from '@/constants/theme';
 
 import CameraPermissionGate from '../components/CameraPermissionGate';
+import CameraAngleGuide from '../components/CameraAngleGuide';
 import CaptureWarningBanners, {
   type CaptureWarningKind,
 } from '../components/CaptureWarningBanners';
@@ -36,8 +43,10 @@ import {
 import {
   computeBalanceScore,
   formatBalanceScoreSummary,
+  JOINT_LABEL_KO,
   type BalanceScoreResult,
 } from '../lib/scoring/balanceScore';
+import { BALANCE_SCORE_JOINTS } from '../lib/scoring/balanceScoreConstants';
 import { matchDiagnosis } from '../lib/scoring/diagnosisTemplates';
 import {
   buildSwingSession,
@@ -45,8 +54,8 @@ import {
   type StoredSwingSession,
 } from '../store/swingSessionStore';
 import type { CaptureSegment } from '../types';
-import { bumpProgressAfterSession } from '../../../services/supabase/challenges';
 import { upsertSwingReport } from '../../../services/supabase/swingReports';
+import { attachVideoToSwingSession } from '../../../services/supabase/swingUpload';
 
 /** 탭바 위 녹화 버튼 여백 */
 const RECORD_BUTTON_GAP = 16;
@@ -55,6 +64,20 @@ const RECORD_BUTTON_GAP = 16;
 const POSE_LOST_WARN_MS = 2000;
 /** 상태바 아래 경고 배너 간격 */
 const WARNING_BANNER_GAP_BELOW_STATUS = 72;
+
+function deleteTemporaryVideo(uri: string | null): void {
+  if (!uri) {
+    return;
+  }
+  try {
+    const file = new File(uri);
+    if (file.exists) {
+      file.delete();
+    }
+  } catch (error) {
+    console.warn('[live video] temp cleanup failed', error);
+  }
+}
 
 /**
  * Step 3–7: Skia 스켈레톤 + 녹화 + 구간 분할 + 세션 저장 + 에러/권한 UX.
@@ -77,9 +100,12 @@ export default function SwingCaptureScreen() {
   const displayPointsSV = useSharedValue(createEmptyPackedPosePoints());
   const viewSizeRef = useRef({ width: 0, height: 0 });
   const poseLostSinceRef = useRef<number | null>(null);
+  const nativeVideoRecordingRef = useRef(false);
   const [lastStoredSession, setLastStoredSession] =
     useState<StoredSwingSession | null>(null);
   const [isSavingSession, setIsSavingSession] = useState(false);
+  const [isStartingRecording, setIsStartingRecording] = useState(false);
+  const [videoSaveError, setVideoSaveError] = useState<string | null>(null);
   const [showPoseLostWarn, setShowPoseLostWarn] = useState(false);
   /** 밸런스 지수 (화면 표시) */
   const [lastBalanceScore, setLastBalanceScore] = useState<BalanceScoreResult | null>(
@@ -108,6 +134,20 @@ export default function SwingCaptureScreen() {
 
   useSessionSyncRetryQueue();
 
+  useEffect(() => {
+    return () => {
+      if (!nativeVideoRecordingRef.current) {
+        return;
+      }
+      nativeVideoRecordingRef.current = false;
+      void stopCameraRecording()
+        .then((uri) => deleteTemporaryVideo(uri))
+        .catch((error) => {
+          console.warn('[live video] unmount cleanup failed', error);
+        });
+    };
+  }, []);
+
   const {
     isRecording,
     bufferedFrameCount,
@@ -131,6 +171,14 @@ export default function SwingCaptureScreen() {
     }
     if (next === 'upload' && isRecording) {
       stopRecording();
+      if (nativeVideoRecordingRef.current) {
+        nativeVideoRecordingRef.current = false;
+        void stopCameraRecording()
+          .then((uri) => deleteTemporaryVideo(uri))
+          .catch((error) => {
+            console.warn('[live video] discard failed', error);
+          });
+      }
       clearPhases();
     }
     setCaptureSegment(next);
@@ -224,15 +272,35 @@ export default function SwingCaptureScreen() {
     return `구간 ${phases.length} (탐지 ${detected} · 보간 ${interpolated})`;
   }, [phases]);
 
-  const handleRecordPress = () => {
+  const handleRecordPress = async () => {
+    if (isStartingRecording || isSavingSession) {
+      return;
+    }
+
     if (isRecording) {
+      setIsSavingSession(true);
       const result = stopRecording();
+      let localVideoUri: string | null = null;
+      if (nativeVideoRecordingRef.current) {
+        nativeVideoRecordingRef.current = false;
+        try {
+          localVideoUri = await stopCameraRecording();
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : '영상 파일 저장 실패';
+          setVideoSaveError(message);
+          console.warn('[live video] stop failed', error);
+        }
+      }
+
       if (!result || result.frames.length === 0) {
+        deleteTemporaryVideo(localVideoUri);
         clearPhases();
         setLastStoredSession(null);
         setLastBalanceScore(null);
         setReportSyncStatus('idle');
         setReportSyncError(null);
+        setIsSavingSession(false);
         return;
       }
 
@@ -246,11 +314,10 @@ export default function SwingCaptureScreen() {
         summary: formatBalanceScoreSummary(balanceScore),
         version: balanceScore.version,
         overall: balanceScore.overallScore,
-        joints: {
-          lower_back: balanceScore.joints.lower_back.score,
-          wrist: balanceScore.joints.wrist.score,
-          knee: balanceScore.joints.knee.score,
-        },
+        joints: Object.fromEntries(
+          BALANCE_SCORE_JOINTS.map((j) => [j, balanceScore.joints[j].score]),
+        ),
+        movement: balanceScore.movementMetrics,
         warning: balanceScore.warning,
       });
 
@@ -258,9 +325,9 @@ export default function SwingCaptureScreen() {
         frames: result.frames,
         phases: segmentResult.phases,
         durationMs: result.durationMs,
+        cameraAngle: 'front',
       });
 
-      setIsSavingSession(true);
       setReportSyncStatus('saving');
       setReportSyncError(null);
       void saveSwingSessionLocalFirst(session)
@@ -273,12 +340,30 @@ export default function SwingCaptureScreen() {
             );
             return;
           }
+
+          if (localVideoUri) {
+            const attached = await attachVideoToSwingSession({
+              sessionId: stored.id,
+              localUri: localVideoUri,
+              fileName: `live_${stored.id}.mp4`,
+              mimeType: 'video/mp4',
+            });
+            if (!attached.ok) {
+              setVideoSaveError(attached.message);
+              console.warn('[live video] upload failed', attached.message);
+            } else {
+              setVideoSaveError(null);
+              console.log('[live video] attached', stored.id);
+            }
+          }
+
           const diagnosis = matchDiagnosis(balanceScore, segmentResult.phases);
           console.log('[diagnosis]', {
             patternId: diagnosis.patternId,
             issuePhase: diagnosis.issuePhase,
             drill: diagnosis.template.recommendedDrillId,
             tag: diagnosis.template.tagLabel,
+            facts: diagnosis.facts.map((f) => f.text),
           });
 
           const reportResult = await upsertSwingReport({
@@ -286,7 +371,7 @@ export default function SwingCaptureScreen() {
             userId: stored.userId,
             balanceScore,
             issuePhase: diagnosis.issuePhase,
-            diagnosisText: diagnosis.template.body,
+            diagnosisText: diagnosis.diagnosisText,
             recommendedDrillId: diagnosis.template.recommendedDrillId,
           });
           if (reportResult.ok) {
@@ -294,13 +379,6 @@ export default function SwingCaptureScreen() {
             console.log('[swing_reports] synced', stored.id, {
               issue_phase: diagnosis.issuePhase,
               recommended_drill_id: diagnosis.template.recommendedDrillId,
-            });
-            // 챌린지 progress: target_issue === patternId (issue_phase와 무관)
-            void bumpProgressAfterSession({
-              userId: stored.userId,
-              patternId: diagnosis.patternId,
-            }).catch((err) => {
-              console.warn('[bumpProgressAfterSession]', err);
             });
           } else {
             setReportSyncStatus('error');
@@ -317,6 +395,7 @@ export default function SwingCaptureScreen() {
           setReportSyncError('local save failed');
         })
         .finally(() => {
+          deleteTemporaryVideo(localVideoUri);
           setIsSavingSession(false);
         });
       return;
@@ -326,7 +405,24 @@ export default function SwingCaptureScreen() {
     setLastBalanceScore(null);
     setReportSyncStatus('idle');
     setReportSyncError(null);
-    startRecording();
+    setVideoSaveError(null);
+    setIsStartingRecording(true);
+    try {
+      await startCameraRecording();
+      nativeVideoRecordingRef.current = true;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : '네이티브 영상 녹화를 시작하지 못했어요';
+      setVideoSaveError(message);
+      console.warn('[live video] start failed', error);
+      Alert.alert(
+        '영상 녹화 시작 실패',
+        '스켈레톤 분석은 계속할 수 있지만 영상은 저장되지 않아요. Dev Client를 새로 빌드했는지 확인해 주세요.',
+      );
+    } finally {
+      startRecording();
+      setIsStartingRecording(false);
+    }
   };
 
   if (Platform.OS === 'web') {
@@ -430,6 +526,7 @@ export default function SwingCaptureScreen() {
             width={cameraSize.width}
             height={cameraSize.height}
           />
+          <CameraAngleGuide visible={!isRecording && !lastBalanceScore} />
         </View>
 
         <View
@@ -461,6 +558,9 @@ export default function SwingCaptureScreen() {
                   }${phaseWarning ? ` · ${phaseWarning}` : ''}`
                 : 'Skia 스켈레톤 · 녹화 종료 시 구간 분할·로컬 저장'}
           </Text>
+          {videoSaveError ? (
+            <Text style={styles.videoError}>영상 저장 실패 · 스켈레톤은 정상 저장돼요</Text>
+          ) : null}
           {!isRecording && phases.length > 0 ? (
             <PhaseTimeline phases={phases} />
           ) : null}
@@ -471,11 +571,9 @@ export default function SwingCaptureScreen() {
                 종합 {lastBalanceScore.overallScore}
               </Text>
               <Text style={styles.tempScoreJoints}>
-                허리 {lastBalanceScore.joints.lower_back.score}
-                {' · '}
-                손목 {lastBalanceScore.joints.wrist.score}
-                {' · '}
-                무릎 {lastBalanceScore.joints.knee.score}
+                {BALANCE_SCORE_JOINTS.map(
+                  (j) => `${JOINT_LABEL_KO[j]} ${lastBalanceScore.joints[j].score}`,
+                ).join(' · ')}
               </Text>
               <Text style={styles.tempScoreJoints}>
                 report{' '}
@@ -512,12 +610,16 @@ export default function SwingCaptureScreen() {
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={isRecording ? '녹화 종료' : '녹화 시작'}
-          onPress={handleRecordPress}
+          accessibilityLabel={
+            isStartingRecording ? '녹화 준비 중' : isRecording ? '녹화 종료' : '녹화 시작'
+          }
+          disabled={isStartingRecording || isSavingSession}
+          onPress={() => void handleRecordPress()}
           style={[
             styles.recordButton,
             { bottom: recordButtonBottom },
             isRecording && styles.recordButtonActive,
+            (isStartingRecording || isSavingSession) && styles.recordButtonDisabled,
           ]}
         >
           <View
@@ -640,6 +742,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+  videoError: {
+    marginTop: 4,
+    color: '#FFD0D7',
+    fontSize: 10.5,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
   tempScoreBox: {
     marginTop: 10,
     paddingTop: 10,
@@ -702,6 +811,9 @@ const styles = StyleSheet.create({
   },
   recordButtonActive: {
     borderColor: 'rgba(255,117,140,0.55)',
+  },
+  recordButtonDisabled: {
+    opacity: 0.55,
   },
   recordInner: {
     width: 44,

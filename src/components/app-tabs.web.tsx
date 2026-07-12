@@ -19,7 +19,7 @@ export default function AppTabs() {
       <Tabs.Screen name="index" options={{ title: '홈' }} />
       <Tabs.Screen name="capture" options={{ title: '촬영' }} />
       <Tabs.Screen name="explore" options={{ title: '리포트' }} />
-      <Tabs.Screen name="challenge" options={{ title: '챌린지' }} />
+      <Tabs.Screen name="challenge" options={{ title: '랭킹' }} />
       <Tabs.Screen name="my" options={{ title: '마이' }} />
     </Tabs>
   );

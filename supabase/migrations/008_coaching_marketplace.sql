@@ -313,6 +313,7 @@ create policy "swing_coaching_delete_own"
 
 -- 배정 코치: coaching_requests 에 본인이 coach 로 연결된 객체의 request_id 만 읽기
 -- path: {user_id}/{request_id}.mp4 → 파일 stem = request_id
+-- NOTE: name 은 coaches.name 과 충돌하므로 storage.objects.name 으로 한정해야 함
 drop policy if exists "swing_coaching_select_assigned_coach" on storage.objects;
 create policy "swing_coaching_select_assigned_coach"
   on storage.objects for select to authenticated
@@ -323,7 +324,7 @@ create policy "swing_coaching_select_assigned_coach"
       from public.coaching_requests cr
       join public.coaches c on c.id = cr.coach_id
       where c.auth_user_id = auth.uid()
-        and cr.user_id::text = (storage.foldername(name))[1]
-        and cr.id::text = split_part(storage.filename(name), '.', 1)
+        and cr.user_id::text = (storage.foldername(storage.objects.name))[1]
+        and cr.id::text = split_part(storage.filename(storage.objects.name), '.', 1)
     )
   );

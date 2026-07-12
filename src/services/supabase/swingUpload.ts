@@ -1,9 +1,9 @@
 /**
  * 영상 업로드 → Storage signed URL PUT → swing_sessions(pending).
  *
- * NOTE (5.4절):
- *   실시간(live)은 기본으로 랜드마크만 저장 (video_url = null).
- *   코칭 전송 시 attachVideoToSwingSession 으로 원본을 붙일 수 있다.
+ * NOTE:
+ *   실시간(live)은 MediaPipe 카메라 세션에서 녹화한 원본을
+ *   세션 저장 후 attachVideoToSwingSession 으로 연결한다.
  *   업로드(upload)는 생성 시점에 Storage + video_url 을 둔다.
  */
 
@@ -132,6 +132,69 @@ async function putLocalVideoToStorage(input: {
 }
 
 /**
+ * 실시간 녹화 종료 시 카메라 한 컷(JPEG) 업로드 → thumbnail_url.
+ */
+export async function attachThumbnailToSwingSession(input: {
+  sessionId: string;
+  localUri: string;
+}): Promise<{ ok: true; thumbnailUrl: string } | { ok: false; message: string }> {
+  if (!isSupabaseConfigured()) {
+    return { ok: false, message: 'Supabase 미설정' };
+  }
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, message: 'Supabase client unavailable' };
+  }
+  const userId = await ensureAnonymousUserId();
+  if (!userId) {
+    return { ok: false, message: '로그인(익명 포함)이 필요합니다' };
+  }
+
+  const storagePath = `${userId}/${input.sessionId}_thumb.jpg`;
+  const { data: signed, error: signError } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUploadUrl(storagePath);
+
+  if (signError || !signed?.signedUrl) {
+    return {
+      ok: false,
+      message: signError?.message ?? 'signed upload URL 발급 실패',
+    };
+  }
+
+  try {
+    const file = new File(input.localUri);
+    const uploadResult = await file.upload(signed.signedUrl, {
+      httpMethod: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+    });
+    if (uploadResult.status < 200 || uploadResult.status >= 300) {
+      return {
+        ok: false,
+        message: `썸네일 업로드 실패 (${uploadResult.status})`,
+      };
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : '썸네일 업로드 실패',
+    };
+  }
+
+  const thumbnailUrl = `${BUCKET}/${storagePath}`;
+  const { error } = await supabase
+    .from('swing_sessions')
+    .update({ thumbnail_url: thumbnailUrl })
+    .eq('id', input.sessionId)
+    .eq('user_id', userId);
+
+  if (error) {
+    return { ok: false, message: error.message };
+  }
+  return { ok: true, thumbnailUrl };
+}
+
+/**
  * 기존 세션(주로 live)에 코칭용 원본 영상을 붙인다. capture_mode 는 유지.
  */
 export async function attachVideoToSwingSession(input: {
@@ -241,6 +304,7 @@ export async function uploadSwingVideoAndCreateSession(input: {
     capture_mode: 'upload',
     video_url: uploaded.videoUrl,
     status: 'pending',
+    camera_angle: 'unknown',
   });
 
   if (insertError) {

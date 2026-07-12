@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -88,11 +89,33 @@ export default function CoachingPreviewScreen() {
     }
   }, [signedUrl, player]);
 
+  const stopPlayback = useCallback(() => {
+    try {
+      player.pause();
+    } catch (e) {
+      console.warn('[CoachingPreview] pause', e);
+    }
+  }, [player]);
+
+  // 화면 떠날 때도 재생 중지 (제스처 뒤로가기 포함)
+  useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+      } catch {
+        // unmount
+      }
+    };
+  }, [player]);
+
   return (
     <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
       <View style={styles.head}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => {
+            stopPlayback();
+            router.back();
+          }}
           style={styles.backBtn}
           accessibilityRole="button"
         >
@@ -108,39 +131,54 @@ export default function CoachingPreviewScreen() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {!loading && !error && signedUrl ? (
-        <>
+        <View style={styles.content}>
           <Text style={styles.question}>이 구간이 맞나요?</Text>
           <Text style={styles.meta}>
             {phase ? `구간 · ${phase}` : '문제 구간 클립'} · 약 8초
           </Text>
-          <View style={styles.stage}>
-            <VideoView
-              style={StyleSheet.absoluteFill}
-              player={player}
-              contentFit="contain"
-              nativeControls
-            />
+          <View style={styles.stageWrap}>
+            <View style={styles.stage}>
+              <VideoView
+                style={StyleSheet.absoluteFill}
+                player={player}
+                contentFit="contain"
+                nativeControls
+              />
+            </View>
           </View>
-          {summary ? <Text style={styles.summary}>{summary}</Text> : null}
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => {
-              router.push({
-                pathname: '/coaching/select-coach',
-                params: {
-                  requestId: requestId!,
-                  patternId: patternId ?? '',
-                },
-              });
-            }}
-            style={styles.cta}
+          <ScrollView
+            style={styles.actionsScroll}
+            contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
+            showsVerticalScrollIndicator={false}
           >
-            <Text style={styles.ctaText}>맞아요 · 코치 선택하기</Text>
-          </Pressable>
-          <Pressable onPress={() => router.back()} style={styles.secondary}>
-            <Text style={styles.secondaryText}>다시 고를게요</Text>
-          </Pressable>
-        </>
+            {summary ? <Text style={styles.summary}>{summary}</Text> : null}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                stopPlayback();
+                router.push({
+                  pathname: '/coaching/select-coach',
+                  params: {
+                    requestId: requestId!,
+                    patternId: patternId ?? '',
+                  },
+                });
+              }}
+              style={styles.cta}
+            >
+              <Text style={styles.ctaText}>맞아요 · 코치 선택하기</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                stopPlayback();
+                router.back();
+              }}
+              style={styles.secondary}
+            >
+              <Text style={styles.secondaryText}>다시 고를게요</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
       ) : null}
     </View>
   );
@@ -167,6 +205,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
   },
+  content: { flex: 1 },
+  actionsScroll: { flex: 1 },
   question: {
     color: '#fff',
     fontSize: 20,
@@ -174,10 +214,17 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   meta: { color: 'rgba(255,255,255,0.55)', fontWeight: '600', marginBottom: 12 },
+  stageWrap: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   stage: {
     width: '100%',
+    maxWidth: 236,
     aspectRatio: 9 / 16,
     maxHeight: 420,
+    alignSelf: 'center',
     backgroundColor: '#000',
     borderRadius: 16,
     overflow: 'hidden',

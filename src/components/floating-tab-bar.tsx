@@ -34,7 +34,7 @@ const TAB_META: Record<
     symbol: { ios: 'chart.bar', android: 'bar_chart', web: 'bar_chart' },
   },
   challenge: {
-    label: '챌린지',
+    label: '랭킹',
     symbol: { ios: 'trophy', android: 'emoji_events', web: 'emoji_events' },
   },
   my: {

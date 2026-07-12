@@ -3,6 +3,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,29 @@ import { join } from 'node:path';
 import { getAdminClient, parseVideoUrl } from './supabaseAdmin.js';
 
 const HALF_WINDOW_MS = 4000;
+
+function resolveFfmpegBin(): string {
+  const fromEnv = (process.env.FFMPEG_PATH ?? '').trim();
+  const candidates = [
+    fromEnv,
+    '/opt/homebrew/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    'ffmpeg',
+  ].filter(Boolean);
+
+  for (const bin of candidates) {
+    if (bin === 'ffmpeg') {
+      return bin;
+    }
+    try {
+      accessSync(bin, constants.X_OK);
+      return bin;
+    } catch {
+      // try next
+    }
+  }
+  return 'ffmpeg';
+}
 
 export type PhaseMarkerLike = {
   phase: string;
@@ -46,13 +70,25 @@ export function resolveClipWindow(input: {
 }
 
 function runFfmpeg(args: string[]): Promise<void> {
+  const bin = resolveFfmpegBin();
   return new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     child.stderr.on('data', (chunk: Buffer) => {
       err += chunk.toString();
     });
-    child.on('error', reject);
+    child.on('error', (e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('ENOENT')) {
+        reject(
+          new Error(
+            `ffmpeg not found (${bin}). brew install ffmpeg 후 API를 재시작하세요.`,
+          ),
+        );
+        return;
+      }
+      reject(e);
+    });
     child.on('close', (code) => {
       if (code === 0) {
         resolve();
@@ -132,7 +168,9 @@ export function sanitizeDiagnosisSummary(text: string | null | undefined): strin
     return '스윙 컨디셔닝 인사이트를 함께 확인해 주세요.';
   }
   const banned = [/부상/g, /위험/g, /진단/g];
-  let out = text.trim();
+  // 구조화 본문이면 요약 단락만 (홈·코치 메일용)
+  const factMark = text.indexOf('[근거]');
+  let out = (factMark >= 0 ? text.slice(0, factMark) : text).trim();
   for (const re of banned) {
     out = out.replace(re, '참고');
   }

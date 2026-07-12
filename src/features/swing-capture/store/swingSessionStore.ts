@@ -1,6 +1,7 @@
 /**
  * 스윙 세션 로컬 저장(오프라인 우선) + Supabase 동기화 큐.
- * 영상 픽셀은 저장하지 않음 — LandmarkFrame[] / PhaseMarker[] 만.
+ * 로컬에는 LandmarkFrame[] / PhaseMarker[]만 저장한다.
+ * 영상은 네이티브 임시 파일에서 Storage로 직접 업로드한다.
  */
 
 import { Platform } from 'react-native';
@@ -92,6 +93,8 @@ export function buildSwingSession(input: {
   phases: PhaseMarker[];
   durationMs: number;
   fps?: number;
+  /** 1폰 정면 가이드 준수 시 'front' */
+  cameraAngle?: SwingSession['cameraAngle'];
 }): SwingSession {
   const platform = Platform.OS === 'ios' ? 'ios' : 'android';
   const durationMs = Math.max(0, input.durationMs);
@@ -111,6 +114,7 @@ export function buildSwingSession(input: {
     phases: input.phases,
     durationMs,
     deviceInfo: { platform, fps },
+    cameraAngle: input.cameraAngle ?? 'unknown',
   };
 }
 

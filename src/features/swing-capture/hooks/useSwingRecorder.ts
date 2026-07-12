@@ -35,8 +35,8 @@ export interface UseSwingRecorderResult {
 }
 
 /**
- * 영상 픽셀은 저장하지 않는다 (5.4절).
- * 버퍼에는 원본 좌표만 넣고, 스무딩본은 화면 표시용으로 훅 밖에 둔다.
+ * 이 훅은 원본 좌표 버퍼만 담당한다.
+ * 카메라 픽셀 녹화는 MediaPipe 네이티브 세션에서 동시에 처리한다.
  */
 export function useSwingRecorder(): UseSwingRecorderResult {
   const [isRecording, setIsRecording] = useState(false);

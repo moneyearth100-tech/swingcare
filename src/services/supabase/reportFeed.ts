@@ -4,6 +4,7 @@
  */
 
 import { getSupabaseClient, isSupabaseConfigured, ensureAnonymousUserId } from './client';
+import { parseDiagnosisText } from '../../features/swing-capture/lib/scoring/diagnosisTemplates';
 import type { SwingReportRow } from './swingReports';
 
 export type ReportFeedItem =
@@ -164,8 +165,9 @@ export async function fetchReportFeed(limit = 30): Promise<ReportFeedItem[]> {
 
   for (const r of reportRows) {
     const createdAt = r.created_at ?? new Date().toISOString();
+    const parsed = parseDiagnosisText(r.diagnosis_text);
     const title =
-      r.diagnosis_text?.split('.')[0]?.trim() ||
+      parsed.summary ||
       `종합 ${Math.round(r.overall_score)}점`;
     items.push({
       kind: 'report',

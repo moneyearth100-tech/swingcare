@@ -1,0 +1,17 @@
+# Keep Vercel uploads small when deploying from monorepo root
+node_modules
+**/node_modules
+.next
+**/.next
+.expo
+ios
+android
+.venv
+**/.venv
+swingcare-vision/.venv
+swingcare-api/node_modules
+swingcare-coach-web/node_modules
+swingcare-coach-web/.next
+.git
+*.log
+.DS_Store

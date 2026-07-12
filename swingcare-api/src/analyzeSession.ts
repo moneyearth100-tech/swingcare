@@ -88,13 +88,14 @@ export async function analyzeUploadSession(
       durationMs: vision.durationMs,
       fps: vision.fps,
       overallScore: balanceScore.overallScore,
-      jointScores: {
-        lower_back: balanceScore.joints.lower_back.score,
-        wrist: balanceScore.joints.wrist.score,
-        knee: balanceScore.joints.knee.score,
-      },
+      jointScores: Object.fromEntries(
+        (Object.keys(balanceScore.joints) as Array<
+          keyof typeof balanceScore.joints
+        >).map((k) => [k, balanceScore.joints[k].score]),
+      ) as Record<string, number>,
+      movementMetrics: balanceScore.movementMetrics,
       issuePhase: diagnosis.issuePhase,
-      diagnosisText: diagnosis.template.body,
+      diagnosisText: diagnosis.diagnosisText,
       recommendedDrillId: diagnosis.template.recommendedDrillId,
       scoringVersion: balanceScore.version,
     });

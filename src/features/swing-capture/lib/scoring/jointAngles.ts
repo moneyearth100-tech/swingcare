@@ -1,6 +1,7 @@
 /**
  * BlazePose 2D 랜드마크로 관절 각도(도) 근사.
  * 영상 평면 각도 — 3D 관절각이 아님.
+ * (손목 코킹만 movementMetrics에서 3D 사용)
  */
 
 import type { Landmark, LandmarkFrame, PoseLandmarks } from '../landmarkTypes';
@@ -11,7 +12,7 @@ import {
   type BalanceScoreJoint,
 } from './balanceScoreConstants';
 
-function isUsable(point: Landmark | undefined): point is Landmark {
+export function isUsable(point: Landmark | undefined): point is Landmark {
   return (
     point != null &&
     Number.isFinite(point.x) &&
@@ -20,7 +21,7 @@ function isUsable(point: Landmark | undefined): point is Landmark {
   );
 }
 
-/** 세 점으로 끼인 각 (b가 꼭짓점), 도 단위 0~180 */
+/** 세 점으로 끼인 각 (b가 꼭짓점), 도 단위 0~180 — 2D(x,y) */
 export function angleDegAt(
   a: { x: number; y: number },
   b: { x: number; y: number },
@@ -33,6 +34,28 @@ export function angleDegAt(
   const dot = bax * bcx + bay * bcy;
   const magBA = Math.hypot(bax, bay);
   const magBC = Math.hypot(bcx, bcy);
+  if (magBA < 1e-8 || magBC < 1e-8) {
+    return NaN;
+  }
+  const cos = Math.min(1, Math.max(-1, dot / (magBA * magBC)));
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+/** 세 점 끼인 각 — 3D(x,y,z) */
+export function angleDegAt3D(
+  a: { x: number; y: number; z: number },
+  b: { x: number; y: number; z: number },
+  c: { x: number; y: number; z: number },
+): number {
+  const bax = a.x - b.x;
+  const bay = a.y - b.y;
+  const baz = a.z - b.z;
+  const bcx = c.x - b.x;
+  const bcy = c.y - b.y;
+  const bcz = c.z - b.z;
+  const dot = bax * bcx + bay * bcy + baz * bcz;
+  const magBA = Math.hypot(bax, bay, baz);
+  const magBC = Math.hypot(bcx, bcy, bcz);
   if (magBA < 1e-8 || magBC < 1e-8) {
     return NaN;
   }
@@ -79,7 +102,63 @@ function lowerBackAngle(landmarks: PoseLandmarks): number | null {
 }
 
 /**
- * 손목: 어깨–팔꿈치–손목 (좌우 평균, 우타 트레일/리드 모두 반영)
+ * 어깨: 팔꿈치–어깨–엉덩이 (좌우 평균)
+ */
+function shoulderAngle(landmarks: PoseLandmarks): number | null {
+  const values: number[] = [];
+  const pairs: [number, number, number][] = [
+    [
+      LANDMARK_INDEX.left_elbow,
+      LANDMARK_INDEX.left_shoulder,
+      LANDMARK_INDEX.left_hip,
+    ],
+    [
+      LANDMARK_INDEX.right_elbow,
+      LANDMARK_INDEX.right_shoulder,
+      LANDMARK_INDEX.right_hip,
+    ],
+  ];
+  for (const [ei, si, hi] of pairs) {
+    const e = landmarks[ei];
+    const s = landmarks[si];
+    const h = landmarks[hi];
+    if (isUsable(e) && isUsable(s) && isUsable(h)) {
+      values.push(angleDegAt(e, s, h));
+    }
+  }
+  return averageFinite(values);
+}
+
+/**
+ * 힙: 어깨–엉덩이–무릎 (좌우 평균)
+ */
+function hipAngle(landmarks: PoseLandmarks): number | null {
+  const values: number[] = [];
+  const pairs: [number, number, number][] = [
+    [
+      LANDMARK_INDEX.left_shoulder,
+      LANDMARK_INDEX.left_hip,
+      LANDMARK_INDEX.left_knee,
+    ],
+    [
+      LANDMARK_INDEX.right_shoulder,
+      LANDMARK_INDEX.right_hip,
+      LANDMARK_INDEX.right_knee,
+    ],
+  ];
+  for (const [si, hi, ki] of pairs) {
+    const s = landmarks[si];
+    const h = landmarks[hi];
+    const k = landmarks[ki];
+    if (isUsable(s) && isUsable(h) && isUsable(k)) {
+      values.push(angleDegAt(s, h, k));
+    }
+  }
+  return averageFinite(values);
+}
+
+/**
+ * 손목: 어깨–팔꿈치–손목 (좌우 평균)
  */
 function wristAngle(landmarks: PoseLandmarks): number | null {
   const values: number[] = [];
@@ -134,6 +213,10 @@ export function jointAngleDeg(
   switch (joint) {
     case 'lower_back':
       return lowerBackAngle(landmarks);
+    case 'shoulder':
+      return shoulderAngle(landmarks);
+    case 'hip':
+      return hipAngle(landmarks);
     case 'wrist':
       return wristAngle(landmarks);
     case 'knee':

@@ -7,20 +7,23 @@ import type { Landmark, LandmarkFrame, PhaseMarker } from '../landmarkTypes';
 import { BLAZEPOSE_LANDMARK_COUNT, LANDMARK_INDEX } from '../landmarkTypes';
 
 import { computeBalanceScore } from './balanceScore';
+import { BALANCE_SCORE_JOINTS } from './balanceScoreConstants';
+import { matchDiagnosis, parseDiagnosisText } from './diagnosisTemplates';
 
-function lm(x: number, y: number, visibility = 0.9): Landmark {
-  return { x, y, z: 0, visibility };
+function lm(x: number, y: number, z = 0, visibility = 0.9): Landmark {
+  return { x, y, z, visibility };
 }
 
 function blankPose(): Landmark[] {
   return Array.from({ length: BLAZEPOSE_LANDMARK_COUNT }, () =>
-    lm(0.5, 0.5, 0.1),
+    lm(0.5, 0.5, 0, 0.1),
   );
 }
 
 function poseAt(t: number): Landmark[] {
   const landmarks = blankPose();
   const lean = 0.02 * Math.sin(t * Math.PI);
+  landmarks[LANDMARK_INDEX.nose] = lm(0.5, 0.18 - 0.01 * t);
   landmarks[LANDMARK_INDEX.left_shoulder] = lm(0.4, 0.28);
   landmarks[LANDMARK_INDEX.right_shoulder] = lm(0.6, 0.28);
   landmarks[LANDMARK_INDEX.left_hip] = lm(0.42, 0.5 + lean);
@@ -31,8 +34,10 @@ function poseAt(t: number): Landmark[] {
   landmarks[LANDMARK_INDEX.right_ankle] = lm(0.57, 0.88);
   landmarks[LANDMARK_INDEX.left_elbow] = lm(0.32, 0.4);
   landmarks[LANDMARK_INDEX.right_elbow] = lm(0.68, 0.35 - 0.05 * t);
-  landmarks[LANDMARK_INDEX.left_wrist] = lm(0.28, 0.52);
-  landmarks[LANDMARK_INDEX.right_wrist] = lm(0.72, 0.25 + 0.4 * t);
+  landmarks[LANDMARK_INDEX.left_wrist] = lm(0.28, 0.52, -0.05);
+  landmarks[LANDMARK_INDEX.right_wrist] = lm(0.72, 0.25 + 0.4 * t, -0.08);
+  landmarks[LANDMARK_INDEX.left_index] = lm(0.26, 0.58, -0.1);
+  landmarks[LANDMARK_INDEX.right_index] = lm(0.74, 0.2 + 0.4 * t, -0.12);
   return landmarks;
 }
 
@@ -76,21 +81,45 @@ function assert(cond: boolean, msg: string): void {
 const { frames, phases } = buildSynthetic();
 const result = computeBalanceScore(frames, phases);
 
+assert(result.version === 'load_score_v2', `version: ${result.version}`);
 assert(
   result.overallScore >= 0 && result.overallScore <= 100,
   `overall out of range: ${result.overallScore}`,
 );
-for (const joint of ['lower_back', 'wrist', 'knee'] as const) {
+for (const joint of BALANCE_SCORE_JOINTS) {
   const s = result.joints[joint].score;
   assert(s >= 0 && s <= 100, `${joint} out of range: ${s}`);
   assert(result.joints[joint].sampleCount > 0, `${joint} no samples`);
 }
 
+assert(
+  result.movementMetrics.weightShiftDelta != null,
+  'weightShiftDelta null',
+);
+assert(result.movementMetrics.headRiseDelta != null, 'headRiseDelta null');
+assert(
+  result.movementMetrics.rightWristCockingDeg != null,
+  'rightWristCockingDeg null',
+);
+
 console.log('[balanceScore.sampleCheck]', {
   overall: result.overallScore,
-  lower_back: result.joints.lower_back.score,
-  wrist: result.joints.wrist.score,
-  knee: result.joints.knee.score,
+  joints: Object.fromEntries(
+    BALANCE_SCORE_JOINTS.map((j) => [j, result.joints[j].score]),
+  ),
+  movement: result.movementMetrics,
   warning: result.warning,
+});
+
+const diagnosis = matchDiagnosis(result, phases);
+const parsed = parseDiagnosisText(diagnosis.diagnosisText);
+assert(parsed.summary.length > 0, 'diagnosis summary empty');
+assert(parsed.facts.length >= 1, 'diagnosis facts empty');
+assert(parsed.next != null && parsed.next.length > 0, 'diagnosis next empty');
+console.log('[diagnosis.sampleCheck]', {
+  pattern: diagnosis.patternId,
+  summary: parsed.summary,
+  facts: parsed.facts,
+  next: parsed.next,
 });
 console.log('OK');

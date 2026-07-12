@@ -7,25 +7,44 @@
 
 import type { SwingPhase } from '../landmarkTypes';
 
-/** 점수에 포함하는 관절 (목업: 허리/손목/무릎) */
-export type BalanceScoreJoint = 'lower_back' | 'wrist' | 'knee';
+/** 점수에 포함하는 관절 (v2: 허리/어깨/힙/손목/무릎) */
+export type BalanceScoreJoint =
+  | 'lower_back'
+  | 'shoulder'
+  | 'hip'
+  | 'wrist'
+  | 'knee';
 
 export const BALANCE_SCORE_JOINTS: readonly BalanceScoreJoint[] = [
   'lower_back',
+  'shoulder',
+  'hip',
   'wrist',
   'knee',
 ] as const;
 
-export const BALANCE_SCORE_VERSION = 'balance_score_v1_placeholder';
+/** UI·로그용 한글 라벨 */
+export const JOINT_LABEL_KO: Record<BalanceScoreJoint, string> = {
+  lower_back: '허리',
+  shoulder: '어깨',
+  hip: '힙',
+  wrist: '손목',
+  knee: '무릎',
+};
+
+/** load_score_v2 — shoulder/hip·이동지표·손목 코킹 포함 */
+export const BALANCE_SCORE_VERSION = 'load_score_v2';
 
 /**
  * 관절별 종합 가중치 (합=1).
  * ⚠️ 스포츠의학 자문 후 재조정 필요
  */
 export const JOINT_WEIGHTS: Record<BalanceScoreJoint, number> = {
-  lower_back: 0.4,
-  wrist: 0.3,
-  knee: 0.3,
+  lower_back: 0.28,
+  shoulder: 0.18,
+  hip: 0.18,
+  wrist: 0.18,
+  knee: 0.18,
 };
 
 /**
@@ -53,6 +72,28 @@ export const REFERENCE_ANGLE_DEG: Record<
   Partial<Record<SwingPhase, number>>
 > = {
   lower_back: {
+    address: 165,
+    toe_up: 160,
+    mid_backswing: 155,
+    top: 150,
+    mid_downswing: 145,
+    impact: 155,
+    mid_follow_through: 160,
+    finish: 165,
+  },
+  /** placeholder — 팔꿈치–어깨–엉덩이 (좌우 평균) */
+  shoulder: {
+    address: 50,
+    toe_up: 55,
+    mid_backswing: 70,
+    top: 90,
+    mid_downswing: 75,
+    impact: 45,
+    mid_follow_through: 40,
+    finish: 35,
+  },
+  /** placeholder — 어깨–엉덩이–무릎 (좌우 평균) */
+  hip: {
     address: 165,
     toe_up: 160,
     mid_backswing: 155,
@@ -90,6 +131,8 @@ export const REFERENCE_ANGLE_DEG: Record<
  */
 export const MAX_DEVIATION_DEG: Record<BalanceScoreJoint, number> = {
   lower_back: 45,
+  shoulder: 50,
+  hip: 45,
   wrist: 55,
   knee: 40,
 };
@@ -103,3 +146,10 @@ export const MIN_LANDMARK_VISIBILITY = 0.35;
  */
 export const SCORE_BAND_GOOD = 70;
 export const SCORE_BAND_CAUTION = 50;
+
+/**
+ * 이동량(정규화) 구간 — 좋고 나쁨이 아니라 크기만 표시.
+ * ⚠️ 스포츠의학 자문 후 재조정 필요
+ */
+export const MOVEMENT_DELTA_SMALL = 0.08;
+export const MOVEMENT_DELTA_MEDIUM = 0.18;
