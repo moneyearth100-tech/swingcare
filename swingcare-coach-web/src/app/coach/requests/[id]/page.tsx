@@ -16,6 +16,9 @@ export default async function CoachRequestDetailPage({
 }) {
   const { id } = await params;
   const supabase = await createClient();
+  if (!supabase) {
+    redirect('/coach/login');
+  }
   const session = await requireCoachSession(supabase);
   if (!session) {
     redirect('/coach/login');

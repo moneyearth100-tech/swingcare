@@ -9,7 +9,9 @@ import type { CoachRequestStatus } from '@/lib/types';
 
 export async function signOutAction() {
   const supabase = await createClient();
-  await supabase.auth.signOut();
+  if (supabase) {
+    await supabase.auth.signOut();
+  }
   redirect('/coach/login');
 }
 
@@ -33,6 +35,9 @@ export async function updateRequestAction(formData: FormData) {
   }
 
   const supabase = await createClient();
+  if (!supabase) {
+    return { ok: false as const, error: 'Supabase 환경 변수가 없습니다' };
+  }
   const session = await requireCoachSession(supabase);
   if (!session) {
     return { ok: false as const, error: '코치 권한이 없습니다' };

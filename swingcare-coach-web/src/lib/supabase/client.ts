@@ -1,12 +1,13 @@
 import { createBrowserClient } from '@supabase/ssr';
 
+import { getSupabasePublicConfig } from '@/lib/supabase/config';
+
 export function createClient() {
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').trim();
-  const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '').trim();
-  if (!url || !key) {
+  const config = getSupabasePublicConfig();
+  if (!config) {
     throw new Error(
-      'NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 가 없습니다. Vercel Environment Variables를 확인하세요.',
+      'NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY 가 없습니다.',
     );
   }
-  return createBrowserClient(url, key);
+  return createBrowserClient(config.url, config.anonKey);
 }

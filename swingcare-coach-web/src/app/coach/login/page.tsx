@@ -1,11 +1,16 @@
 import { redirect } from 'next/navigation';
 
 import { LoginForm } from '@/app/coach/login/LoginForm';
+import { MissingEnvNotice } from '@/components/MissingEnvNotice';
 import { requireCoachSession } from '@/lib/coachAuth';
 import { createClient } from '@/lib/supabase/server';
 
 export default async function CoachLoginPage() {
   const supabase = await createClient();
+  if (!supabase) {
+    return <MissingEnvNotice />;
+  }
+
   const session = await requireCoachSession(supabase);
   if (session) {
     redirect('/coach/requests');
