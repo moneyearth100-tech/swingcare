@@ -1,6 +1,11 @@
 import express from 'express';
 import type { Queue } from 'bullmq';
 
+import {
+  BALANCE_SCORE_JOINTS,
+  BALANCE_SCORE_VERSION,
+} from '../../src/features/swing-capture/lib/scoring/balanceScoreConstants.ts';
+
 import { config } from './config.js';
 import { mountCoachingRoutes } from './coachingRoutes.js';
 import {
@@ -19,6 +24,8 @@ export function createServer(queue: Queue<AnalyzeJobData>) {
       redis: config.redisUrl,
       vision: config.visionExtractUrl,
       pendingPollMs: config.pendingPollMs,
+      scoringVersion: BALANCE_SCORE_VERSION,
+      scoreJoints: BALANCE_SCORE_JOINTS,
     });
   });
 
