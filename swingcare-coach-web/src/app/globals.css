@@ -222,6 +222,11 @@ a:hover {
   background: #fafbfc;
 }
 
+.requests-table th:not(:nth-child(3)),
+.requests-table td:not(.summary-cell) {
+  white-space: nowrap;
+}
+
 .summary-cell a {
   color: var(--text);
 }

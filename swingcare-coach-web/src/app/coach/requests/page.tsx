@@ -78,7 +78,7 @@ export default async function CoachRequestsPage({
       {rows.length === 0 ? (
         <p className="empty">표시할 요청이 없습니다.</p>
       ) : (
-        <table className="table">
+        <table className="table requests-table">
           <thead>
             <tr>
               <th>상태</th>
