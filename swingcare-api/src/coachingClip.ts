@@ -105,7 +105,11 @@ export async function extractAndUploadClip(input: {
   videoUrl: string;
   startMs: number;
   endMs: number;
-}): Promise<{ clipUrl: string; storagePath: string }> {
+}): Promise<{
+  clipUrl: string;
+  storagePath: string;
+  usedOriginalVideo: boolean;
+}> {
   const { bucket, path } = parseVideoUrl(input.videoUrl);
   const { data, error } = await getAdminClient().storage
     .from(bucket)
@@ -118,46 +122,63 @@ export async function extractAndUploadClip(input: {
   const srcPath = join(dir, 'source.bin');
   const outPath = join(dir, 'clip.mp4');
   try {
-    await writeFile(srcPath, Buffer.from(await data.arrayBuffer()));
+    const sourceBuffer = Buffer.from(await data.arrayBuffer());
+    await writeFile(srcPath, sourceBuffer);
     const startSec = (input.startMs / 1000).toFixed(3);
     const durationSec = Math.max(
       0.5,
       (input.endMs - input.startMs) / 1000,
     ).toFixed(3);
-    await runFfmpeg([
-      '-y',
-      '-ss',
-      startSec,
-      '-i',
-      srcPath,
-      '-t',
-      durationSec,
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '23',
-      '-c:a',
-      'aac',
-      '-movflags',
-      '+faststart',
-      outPath,
-    ]);
+    let clipBuffer: Buffer;
+    let extension = '.mp4';
+    let contentType = 'video/mp4';
+    let usedOriginalVideo = false;
+    try {
+      await runFfmpeg([
+        '-y',
+        '-ss',
+        startSec,
+        '-i',
+        srcPath,
+        '-t',
+        durationSec,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '23',
+        '-c:a',
+        'aac',
+        '-movflags',
+        '+faststart',
+        outPath,
+      ]);
+      clipBuffer = await readFile(outPath);
+    } catch (error) {
+      usedOriginalVideo = true;
+      clipBuffer = sourceBuffer;
+      extension = input.videoUrl.toLowerCase().endsWith('.mov') ? '.mov' : '.mp4';
+      contentType =
+        extension === '.mov' ? 'video/quicktime' : data.type || 'video/mp4';
+      console.warn(
+        '[coaching clip] trim failed; using original video',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
-    const clipBuffer = await readFile(outPath);
-    const storagePath = `${input.userId}/${input.requestId}.mp4`;
+    const storagePath = `${input.userId}/${input.requestId}${extension}`;
     const { error: upErr } = await getAdminClient().storage
       .from('swing-coaching')
       .upload(storagePath, clipBuffer, {
-        contentType: 'video/mp4',
+        contentType,
         upsert: true,
       });
     if (upErr) {
       throw new Error(upErr.message);
     }
     const clipUrl = `swing-coaching/${storagePath}`;
-    return { clipUrl, storagePath };
+    return { clipUrl, storagePath, usedOriginalVideo };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }

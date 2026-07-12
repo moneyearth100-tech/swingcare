@@ -10,12 +10,18 @@
 import { File } from 'expo-file-system';
 import { Platform } from 'react-native';
 
+import type {
+  LandmarkFrame,
+  PhaseMarker,
+} from '../../features/swing-capture/lib/landmarkTypes';
+import type { BalanceScoreResult } from '../../features/swing-capture/lib/scoring/balanceScore';
 import { enqueueSessionAnalyze } from './analyzeEnqueue';
 import {
   ensureAnonymousUserId,
   getSupabaseClient,
   isSupabaseConfigured,
 } from './client';
+import { upsertSwingReport } from './swingReports';
 
 const BUCKET = 'swing-uploads';
 
@@ -28,9 +34,27 @@ export type UploadSwingVideoResult =
     }
   | {
       ok: false;
-      reason: 'not_configured' | 'auth' | 'signed_url' | 'put' | 'insert' | 'error';
+      reason:
+        | 'not_configured'
+        | 'auth'
+        | 'signed_url'
+        | 'put'
+        | 'insert'
+        | 'report'
+        | 'error';
       message: string;
     };
+
+export interface UploadOnDeviceAnalysis {
+  frames: LandmarkFrame[];
+  phases: PhaseMarker[];
+  fps: number;
+  durationMs: number;
+  balanceScore: BalanceScoreResult;
+  issuePhase: string | null;
+  diagnosisText: string;
+  recommendedDrillId: string;
+}
 
 /**
  * swing_sessions.id 는 uuid.
@@ -249,6 +273,8 @@ export async function uploadSwingVideoAndCreateSession(input: {
   fileName: string;
   mimeType?: string | null;
   sizeBytes?: number | null;
+  durationMs: number;
+  onDeviceAnalysis?: UploadOnDeviceAnalysis;
 }): Promise<UploadSwingVideoResult> {
   if (!isSupabaseConfigured()) {
     return {
@@ -293,17 +319,21 @@ export async function uploadSwingVideoAndCreateSession(input: {
   }
 
   const platform = Platform.OS === 'ios' ? 'ios' : 'android';
+  const analysis = input.onDeviceAnalysis;
   const { error: insertError } = await supabase.from('swing_sessions').insert({
     id: sessionId,
     user_id: userId,
-    duration_ms: 0,
+    duration_ms: Math.max(
+      0,
+      Math.round(analysis?.durationMs ?? input.durationMs),
+    ),
     platform,
-    fps: 0,
-    frames: [],
-    phases: [],
+    fps: analysis?.fps ?? 0,
+    frames: analysis?.frames ?? [],
+    phases: analysis?.phases ?? [],
     capture_mode: 'upload',
     video_url: uploaded.videoUrl,
-    status: 'pending',
+    status: analysis ? 'done' : 'pending',
     camera_angle: 'unknown',
   });
 
@@ -316,7 +346,30 @@ export async function uploadSwingVideoAndCreateSession(input: {
     };
   }
 
-  void enqueueSessionAnalyze(sessionId);
+  if (analysis) {
+    const reportResult = await upsertSwingReport({
+      sessionId,
+      userId,
+      balanceScore: analysis.balanceScore,
+      issuePhase: analysis.issuePhase,
+      diagnosisText: analysis.diagnosisText,
+      recommendedDrillId: analysis.recommendedDrillId,
+    });
+    if (!reportResult.ok) {
+      await supabase
+        .from('swing_sessions')
+        .update({ status: 'error' })
+        .eq('id', sessionId)
+        .eq('user_id', userId);
+      return {
+        ok: false,
+        reason: 'report',
+        message: `분석 리포트 저장 실패: ${reportResult.message}`,
+      };
+    }
+  } else {
+    void enqueueSessionAnalyze(sessionId);
+  }
 
   return {
     ok: true,

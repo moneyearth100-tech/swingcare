@@ -6,7 +6,9 @@
  */
 
 import { File, type PickSingleFileResult } from 'expo-file-system';
+import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
+import { createVideoPlayer } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -23,8 +25,14 @@ import {
   isSupabaseConfigured,
 } from '../../../services/supabase/client';
 import { uploadSwingVideoAndCreateSession } from '../../../services/supabase/swingUpload';
+import {
+  analyzeVideoOnDevice,
+  type OnDeviceAnalysisProgress,
+} from '../lib/onDeviceVideoAnalysis';
 
 const MAX_BYTES = 200 * 1024 * 1024;
+const MAX_DURATION_MS = 30_000;
+const DURATION_LOAD_TIMEOUT_MS = 10_000;
 const STATUS_POLL_MS = 4000;
 
 type RecentStatus = 'analyzing' | 'done' | 'error';
@@ -41,11 +49,32 @@ type PickedVideo = {
   fileName: string;
   mimeType: string | null;
   sizeBytes: number | null;
+  durationMs: number | null;
 };
 
 type Props = {
   bottomInset: number;
 };
+
+function normalizeAnalysisProgress(
+  value: unknown,
+): OnDeviceAnalysisProgress | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as Partial<OnDeviceAnalysisProgress>;
+  if (
+    !Number.isFinite(candidate.percent) ||
+    typeof candidate.status !== 'string' ||
+    candidate.status.length === 0
+  ) {
+    return null;
+  }
+  return {
+    percent: Math.round(Math.max(0, Math.min(100, candidate.percent as number))),
+    status: candidate.status,
+  };
+}
 
 function formatKstShort(iso: string = new Date().toISOString()): string {
   const d = new Date(iso);
@@ -88,9 +117,55 @@ function isMissingNativeModuleError(error: unknown): boolean {
   return (
     message.includes('Cannot find native module') ||
     message.includes('ExpoImagePicker') ||
-    message.includes('ExponentImagePicker') ||
-    message.includes('undefined is not a function')
+    message.includes('ExponentImagePicker')
   );
+}
+
+/**
+ * Files 선택 결과에는 재생 시간이 없으므로 expo-video 메타데이터로 확인한다.
+ * 길이를 확인하지 못한 영상은 30초 제한을 보장할 수 없어 업로드하지 않는다.
+ */
+async function readVideoDurationMs(uri: string): Promise<number | null> {
+  let player: ReturnType<typeof createVideoPlayer> | null = null;
+  try {
+    player = createVideoPlayer({ uri });
+    if (Number.isFinite(player.duration) && player.duration > 0) {
+      return Math.round(player.duration * 1000);
+    }
+
+    return await new Promise<number | null>((resolve) => {
+      let settled = false;
+      const finish = (value: number | null) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        subscription.remove();
+        resolve(value);
+      };
+      const subscription = player!.addListener('sourceLoad', ({ duration }) => {
+        finish(
+          Number.isFinite(duration) && duration > 0
+            ? Math.round(duration * 1000)
+            : null,
+        );
+      });
+      const timeout = setTimeout(() => {
+        const duration = player?.duration ?? 0;
+        finish(
+          Number.isFinite(duration) && duration > 0
+            ? Math.round(duration * 1000)
+            : null,
+        );
+      }, DURATION_LOAD_TIMEOUT_MS);
+    });
+  } catch (error) {
+    console.warn('[SwingUploadPanel] duration metadata', error);
+    return null;
+  } finally {
+    player?.release();
+  }
 }
 
 async function fetchRecentAnalysisState(sessionId: string): Promise<{
@@ -137,9 +212,12 @@ async function fetchRecentAnalysisState(sessionId: string): Promise<{
 export default function SwingUploadPanel({ bottomInset }: Props) {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [analysisProgress, setAnalysisProgress] =
+    useState<OnDeviceAnalysisProgress | null>(null);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const recentRef = useRef(recent);
   recentRef.current = recent;
+  const displayedProgress = normalizeAnalysisProgress(analysisProgress);
 
   const refreshAnalyzingItems = useCallback(async () => {
     const analyzing = recentRef.current.filter(
@@ -198,46 +276,84 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
     }
 
     setUploading(true);
-    setStatus('업로드 중…');
+    setStatus('영상 길이 확인 중…');
+    const durationMs =
+      picked.durationMs ?? (await readVideoDurationMs(picked.uri));
+    if (durationMs == null) {
+      setUploading(false);
+      setStatus(null);
+      Alert.alert(
+        '영상 길이 확인 실패',
+        '영상 길이를 확인할 수 없어 업로드하지 않았어요. 다른 영상을 선택해 주세요.',
+      );
+      return;
+    }
+    if (durationMs > MAX_DURATION_MS) {
+      setUploading(false);
+      setStatus(null);
+      Alert.alert(
+        '영상이 너무 길어요',
+        '스윙 영상은 30초 이내만 업로드할 수 있어요',
+      );
+      return;
+    }
 
     try {
+      setStatus(null);
+      setAnalysisProgress({ percent: 3, status: '프레임 추출 준비 중' });
+      const analysis = await analyzeVideoOnDevice({
+        uri: picked.uri,
+        expectedDurationMs: durationMs,
+        onProgress: (progress) => {
+          const safeProgress = normalizeAnalysisProgress(progress);
+          if (safeProgress) {
+            setAnalysisProgress(safeProgress);
+          }
+        },
+      });
+
+      setAnalysisProgress({ percent: 96, status: '영상과 리포트 업로드 중' });
       const uploaded = await uploadSwingVideoAndCreateSession({
         localUri: picked.uri,
         fileName: picked.fileName,
         mimeType: picked.mimeType,
         sizeBytes: picked.sizeBytes,
+        durationMs,
+        onDeviceAnalysis: analysis,
       });
 
       if (!uploaded.ok) {
+        setAnalysisProgress(null);
         setStatus(null);
         Alert.alert('업로드 실패', uploaded.message);
         return;
       }
 
-      setStatus('업로드 완료 · 분석 대기');
+      setAnalysisProgress(null);
+      setStatus(
+        `분석 완료 · ${analysis.frames.length}프레임 · 종합 ${Math.round(analysis.balanceScore.overallScore)}점`,
+      );
       setRecent((prev) => [
         {
           id: uploaded.sessionId,
           name: picked.fileName,
-          status: 'analyzing',
-          meta: metaForStatus('analyzing'),
+          status: 'done',
+          meta: metaForStatus('done', analysis.balanceScore.overallScore),
         },
         ...prev.slice(0, 4),
       ]);
-      // Android: 완료 Alert가 방해되어 생략 (상태 텍스트·최근 목록으로 충분)
-      if (Platform.OS !== 'android') {
-        Alert.alert(
-          '업로드 완료',
-          '영상이 등록됐어요. 분석이 끝나면 이 목록과 리포트 탭에 반영됩니다.',
-        );
-      }
     } catch (e) {
+      setAnalysisProgress(null);
       setStatus(null);
+      const message = e instanceof Error ? e.message : '알 수 없는 오류';
       Alert.alert(
-        '업로드 실패',
-        e instanceof Error ? e.message : '알 수 없는 오류',
+        '영상 분석 실패',
+        message.includes('다시 빌드')
+          ? `${message}\niOS: npx expo run:ios\nAndroid: npx expo run:android`
+          : message,
       );
     } finally {
+      setAnalysisProgress(null);
       setUploading(false);
     }
   };
@@ -274,6 +390,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       fileName: file.name || `swing_${Date.now()}.mp4`,
       mimeType: file.type || 'video/mp4',
       sizeBytes: file.size ?? null,
+      durationMs: null,
     });
   };
 
@@ -283,9 +400,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       return;
     }
 
-    let ImagePicker: typeof import('expo-image-picker') | null = null;
     try {
-      ImagePicker = await import('expo-image-picker');
       if (
         typeof ImagePicker.requestMediaLibraryPermissionsAsync !== 'function' ||
         typeof ImagePicker.launchImageLibraryAsync !== 'function'
@@ -317,7 +432,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        mediaTypes: ['videos'],
         allowsEditing: false,
         quality: 1,
       });
@@ -338,6 +453,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
         mimeType:
           asset.mimeType ?? (ext === 'mov' ? 'video/quicktime' : 'video/mp4'),
         sizeBytes: asset.fileSize ?? null,
+        durationMs: asset.duration ?? null,
       });
     } catch (error) {
       if (isMissingNativeModuleError(error)) {
@@ -364,9 +480,9 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       <View style={styles.dropzone}>
         <Text style={styles.dropTitle}>영상을 선택하세요</Text>
         <Text style={styles.dropMeta}>
-          {Platform.OS === 'ios'
-            ? '카메라로 찍은 영상은 「사진에서 선택」을 사용하세요.\nFiles 둘러보기에는 사진 앱 영상이 안 나와요.'
-            : 'MP4 · MOV, 최대 200MB'}
+          {
+            '카메라로 찍은 영상은 「사진에서 선택」을 사용하세요.\n최대 30초 · 200MB'
+          }
         </Text>
 
         <Pressable
@@ -403,7 +519,32 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
           <Text style={styles.secondaryBtnText}>파일에서 선택</Text>
         </Pressable>
 
-        {status ? <Text style={styles.status}>{status}</Text> : null}
+        {displayedProgress ? (
+          <View
+            accessibilityRole="progressbar"
+            accessibilityValue={{
+              min: 0,
+              max: 100,
+              now: displayedProgress.percent,
+              text: `${displayedProgress.status} ${displayedProgress.percent}%`,
+            }}
+            style={styles.progressBlock}
+          >
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${displayedProgress.percent}%` },
+                ]}
+              />
+            </View>
+            <Text style={styles.progressText}>
+              {displayedProgress.status} {displayedProgress.percent}%
+            </Text>
+          </View>
+        ) : status ? (
+          <Text style={styles.status}>{status}</Text>
+        ) : null}
       </View>
 
       <Text style={styles.subhead}>최근 불러온 영상</Text>
@@ -517,6 +658,28 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#8971EA',
+  },
+  progressBlock: {
+    alignSelf: 'stretch',
+    marginTop: 8,
+    gap: 7,
+  },
+  progressTrack: {
+    height: 8,
+    overflow: 'hidden',
+    borderRadius: 999,
+    backgroundColor: 'rgba(137,113,234,0.16)',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#8971EA',
+  },
+  progressText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8971EA',
+    textAlign: 'center',
   },
   subhead: {
     marginHorizontal: 24,

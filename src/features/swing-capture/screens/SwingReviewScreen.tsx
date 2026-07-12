@@ -35,7 +35,7 @@ import {
 /** 슬로우~정상 배속 범위 */
 const RATE_MIN = 0.25;
 const RATE_MAX = 1;
-const RATE_DEFAULT = 0.5;
+const RATE_DEFAULT = 1;
 
 function clampRate(value: number): number {
   return Math.min(RATE_MAX, Math.max(RATE_MIN, value));

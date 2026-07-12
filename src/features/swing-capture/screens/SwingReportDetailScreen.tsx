@@ -317,7 +317,12 @@ export default function SwingReportDetailScreen() {
                     </View>
                   ) : null}
                   {parsed.next ? (
-                    <Text style={styles.nextLine}>{parsed.next}</Text>
+                    <View style={styles.factBlock}>
+                      <Text style={styles.factHeading}>다음</Text>
+                      <Text style={styles.nextLine}>
+                        {parsed.next.replace(/^다음\s*:\s*/, '')}
+                      </Text>
+                    </View>
                   ) : null}
                 </View>
               );
@@ -412,13 +417,6 @@ export default function SwingReportDetailScreen() {
                   {formatDeg(report.movement_metrics.leftWristCockingDeg)}
                 </Text>
               </View>
-            </View>
-          ) : null}
-
-          {report.recommended_drill_id ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>추천 드릴</Text>
-              <Text style={styles.drillId}>{report.recommended_drill_id}</Text>
             </View>
           ) : null}
 
@@ -608,7 +606,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#232630',
     lineHeight: 18,
-    marginTop: 2,
   },
   card: {
     backgroundColor: 'rgba(255,255,255,0.92)',
@@ -718,11 +715,6 @@ const styles = StyleSheet.create({
     color: '#7A8198',
     lineHeight: 16,
     marginTop: -4,
-  },
-  drillId: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#5A6478',
   },
   coachCta: {
     marginTop: 8,

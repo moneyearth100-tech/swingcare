@@ -173,6 +173,7 @@ export function mountCoachingRoutes(app: Express): void {
         clipUrl: uploaded.clipUrl,
         clipStartMs: window.startMs,
         clipEndMs: window.endMs,
+        usedOriginalVideo: uploaded.usedOriginalVideo,
         status: 'draft',
       });
     } catch (error) {
@@ -195,7 +196,9 @@ export function mountCoachingRoutes(app: Express): void {
           res.status(401).json({ ok: false, error: 'unauthorized' });
           return;
         }
-        const requestId = req.params.id;
+        const requestId = Array.isArray(req.params.id)
+          ? req.params.id[0]
+          : req.params.id;
         const coachId =
           typeof req.body?.coachId === 'string' ? req.body.coachId : null;
         if (!coachId) {
@@ -271,7 +274,9 @@ export function mountCoachingRoutes(app: Express): void {
           res.status(401).json({ ok: false, error: 'unauthorized' });
           return;
         }
-        const requestId = req.params.id;
+        const requestId = Array.isArray(req.params.id)
+          ? req.params.id[0]
+          : req.params.id;
         const supabase = getAdminClient();
         const { data: request, error: reqErr } = await supabase
           .from('coaching_requests')
