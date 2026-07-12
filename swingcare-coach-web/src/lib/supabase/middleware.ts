@@ -2,10 +2,19 @@ import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function updateSession(request: NextRequest) {
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').trim();
-  const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '').trim();
-
   // Vercel에 env 미설정 시 createServerClient 가 throw → MIDDLEWARE_INVOCATION_FAILED
+  // Expo 모노레포와 공유하는 EXPO_PUBLIC_* 도 허용
+  const url = (
+    process.env.NEXT_PUBLIC_SUPABASE_URL ??
+    process.env.EXPO_PUBLIC_SUPABASE_URL ??
+    ''
+  ).trim();
+  const key = (
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
+    ''
+  ).trim();
+
   if (!url || !key) {
     console.error(
       '[middleware] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY',
