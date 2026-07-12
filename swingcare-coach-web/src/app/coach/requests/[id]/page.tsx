@@ -1,13 +1,45 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { Suspense } from 'react';
 
 import { ReplyForm } from '@/app/coach/requests/[id]/ReplyForm';
 import { CoachShell } from '@/components/CoachShell';
-import { createClipSignedUrl, requireCoachSession } from '@/lib/coachAuth';
-import { createClient } from '@/lib/supabase/server';
+import {
+  createClipSignedUrl,
+  getCoachSession,
+  getServerSupabase,
+} from '@/lib/coachAuth';
 import { STATUS_LABEL, type CoachingRequestRow } from '@/lib/types';
 
 type Params = Promise<{ id: string }>;
+
+async function ClipPanel({
+  clipUrl,
+}: {
+  clipUrl: string | null;
+}) {
+  const supabase = await getServerSupabase();
+  if (!supabase) {
+    return (
+      <p className="error">클립을 불러올 수 없습니다. 환경 설정을 확인하세요.</p>
+    );
+  }
+  const signedUrl = await createClipSignedUrl(supabase, clipUrl);
+  if (!signedUrl) {
+    return (
+      <p className="error">클립을 불러올 수 없습니다. Storage RLS를 확인하세요.</p>
+    );
+  }
+  return (
+    <video
+      className="clip-player"
+      src={signedUrl}
+      controls
+      playsInline
+      preload="metadata"
+    />
+  );
+}
 
 export default async function CoachRequestDetailPage({
   params,
@@ -15,12 +47,12 @@ export default async function CoachRequestDetailPage({
   params: Params;
 }) {
   const { id } = await params;
-  const supabase = await createClient();
-  if (!supabase) {
+  const session = await getCoachSession();
+  if (!session) {
     redirect('/coach/login');
   }
-  const session = await requireCoachSession(supabase);
-  if (!session) {
+  const supabase = await getServerSupabase();
+  if (!supabase) {
     redirect('/coach/login');
   }
 
@@ -38,28 +70,23 @@ export default async function CoachRequestDetailPage({
   }
 
   const row = data as CoachingRequestRow;
-  const signedUrl = await createClipSignedUrl(supabase, row.clip_url);
 
   return (
-    <CoachShell title="요청 상세">
+    <CoachShell title="요청 상세" session={session}>
       <p className="back-row">
-        <Link href="/coach/requests">← 목록</Link>
+        <Link href="/coach/requests" prefetch>
+          ← 목록
+        </Link>
       </p>
 
       <div className="detail-grid">
         <section className="panel">
           <h2>클립</h2>
-          {signedUrl ? (
-            <video
-              className="clip-player"
-              src={signedUrl}
-              controls
-              playsInline
-              preload="metadata"
-            />
-          ) : (
-            <p className="error">클립을 불러올 수 없습니다. Storage RLS를 확인하세요.</p>
-          )}
+          <Suspense
+            fallback={<p className="muted">클립 불러오는 중…</p>}
+          >
+            <ClipPanel clipUrl={row.clip_url} />
+          </Suspense>
           <dl className="meta">
             <div>
               <dt>상태</dt>

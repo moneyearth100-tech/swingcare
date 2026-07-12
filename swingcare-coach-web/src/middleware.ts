@@ -3,6 +3,13 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // 로그인 화면은 세션 갱신 생략 → 첫 페인트 빠르게
+  if (pathname === '/coach/login') {
+    return NextResponse.next({ request });
+  }
+
   try {
     return await updateSession(request);
   } catch (error) {
@@ -12,10 +19,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    /*
-     * 정적 자산·이미지 제외. 코치 앱 전 경로에서 세션 쿠키 갱신.
-     */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
+  matcher: ['/', '/coach/:path*'],
 };

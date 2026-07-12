@@ -48,25 +48,22 @@ export function LoginForm() {
         return;
       }
 
-      const { data: profile } = await supabase
-        .from('users')
-        .select('role')
-        .eq('id', user.id)
-        .maybeSingle();
+      const [profileRes, coachRes] = await Promise.all([
+        supabase.from('users').select('role').eq('id', user.id).maybeSingle(),
+        supabase
+          .from('coaches')
+          .select('id')
+          .eq('auth_user_id', user.id)
+          .maybeSingle(),
+      ]);
 
-      if (profile?.role !== 'coach') {
+      if (profileRes.data?.role !== 'coach') {
         await supabase.auth.signOut();
         setError('코치 계정이 아닙니다. 관리자에게 role 설정을 요청하세요.');
         return;
       }
 
-      const { data: coach } = await supabase
-        .from('coaches')
-        .select('id')
-        .eq('auth_user_id', user.id)
-        .maybeSingle();
-
-      if (!coach) {
+      if (!coachRes.data) {
         await supabase.auth.signOut();
         setError(
           'coaches.auth_user_id 가 연결되지 않았습니다. 관리자에게 문의하세요.',

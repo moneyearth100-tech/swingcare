@@ -2,21 +2,18 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { signOutAction } from '@/app/coach/actions';
-import { requireCoachSession } from '@/lib/coachAuth';
-import { createClient } from '@/lib/supabase/server';
+import { getCoachSession, type CoachSession } from '@/lib/coachAuth';
 
 export async function CoachShell({
   children,
   title,
+  session: sessionProp,
 }: {
   children: React.ReactNode;
   title: string;
+  session?: CoachSession | null;
 }) {
-  const supabase = await createClient();
-  if (!supabase) {
-    redirect('/coach/login');
-  }
-  const session = await requireCoachSession(supabase);
+  const session = sessionProp ?? (await getCoachSession());
   if (!session) {
     redirect('/coach/login');
   }
@@ -25,7 +22,7 @@ export async function CoachShell({
     <div className="shell">
       <header className="topbar">
         <div className="topbar-left">
-          <Link href="/coach/requests" className="brand-link">
+          <Link href="/coach/requests" className="brand-link" prefetch>
             SwingCare Coach
           </Link>
           <span className="topbar-title">{title}</span>

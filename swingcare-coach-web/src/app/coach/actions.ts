@@ -3,12 +3,11 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 
-import { requireCoachSession } from '@/lib/coachAuth';
-import { createClient } from '@/lib/supabase/server';
+import { getCoachSession, getServerSupabase } from '@/lib/coachAuth';
 import type { CoachRequestStatus } from '@/lib/types';
 
 export async function signOutAction() {
-  const supabase = await createClient();
+  const supabase = await getServerSupabase();
   if (supabase) {
     await supabase.auth.signOut();
   }
@@ -34,11 +33,11 @@ export async function updateRequestAction(formData: FormData) {
     return { ok: false as const, error: '허용되지 않은 상태입니다' };
   }
 
-  const supabase = await createClient();
+  const supabase = await getServerSupabase();
   if (!supabase) {
     return { ok: false as const, error: 'Supabase 환경 변수가 없습니다' };
   }
-  const session = await requireCoachSession(supabase);
+  const session = await getCoachSession();
   if (!session) {
     return { ok: false as const, error: '코치 권한이 없습니다' };
   }

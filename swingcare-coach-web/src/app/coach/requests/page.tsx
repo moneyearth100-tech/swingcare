@@ -2,8 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { CoachShell } from '@/components/CoachShell';
-import { requireCoachSession } from '@/lib/coachAuth';
-import { createClient } from '@/lib/supabase/server';
+import { getCoachSession, getServerSupabase } from '@/lib/coachAuth';
 import {
   INBOX_STATUSES,
   STATUS_LABEL,
@@ -24,19 +23,19 @@ export default async function CoachRequestsPage({
       ? (params.status as CoachRequestStatus)
       : null;
 
-  const supabase = await createClient();
-  if (!supabase) {
+  const session = await getCoachSession();
+  if (!session) {
     redirect('/coach/login');
   }
-  const session = await requireCoachSession(supabase);
-  if (!session) {
+  const supabase = await getServerSupabase();
+  if (!supabase) {
     redirect('/coach/login');
   }
 
   let query = supabase
     .from('coaching_requests')
     .select(
-      'id, status, clip_url, clip_start_ms, clip_end_ms, issue_phase, diagnosis_pattern_id, diagnosis_summary, price_krw, coach_reply_text, coach_replied_at, created_at, updated_at, user_id',
+      'id, status, issue_phase, diagnosis_summary, price_krw, created_at',
     )
     .eq('coach_id', session.coachId)
     .neq('status', 'draft')
@@ -48,10 +47,18 @@ export default async function CoachRequestsPage({
   }
 
   const { data, error } = await query;
-  const rows = (data ?? []) as CoachingRequestRow[];
+  const rows = (data ?? []) as Pick<
+    CoachingRequestRow,
+    | 'id'
+    | 'status'
+    | 'issue_phase'
+    | 'diagnosis_summary'
+    | 'price_krw'
+    | 'created_at'
+  >[];
 
   return (
-    <CoachShell title="요청 인박스">
+    <CoachShell title="요청 인박스" session={session}>
       <div className="filters">
         <FilterChip href="/coach/requests" active={!filter} label="전체" />
         {INBOX_STATUSES.map((s) => (
@@ -91,7 +98,7 @@ export default async function CoachRequestsPage({
                 </td>
                 <td>{row.issue_phase ?? '—'}</td>
                 <td className="summary-cell">
-                  <Link href={`/coach/requests/${row.id}`}>
+                  <Link href={`/coach/requests/${row.id}`} prefetch>
                     {row.diagnosis_summary?.slice(0, 80) || '상세 보기'}
                   </Link>
                 </td>
@@ -122,7 +129,7 @@ function FilterChip({
   label: string;
 }) {
   return (
-    <Link href={href} className={`chip${active ? ' active' : ''}`}>
+    <Link href={href} className={`chip${active ? ' active' : ''}`} prefetch>
       {label}
     </Link>
   );
