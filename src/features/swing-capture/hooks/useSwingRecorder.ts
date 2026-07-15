@@ -23,6 +23,8 @@ export interface UseSwingRecorderResult {
   lastResult: SwingRecordingResult | null;
   startRecording: () => void;
   stopRecording: () => SwingRecordingResult | null;
+  /** 녹화 중이 아닐 때 직전 결과·버퍼 카운트만 비움 (포커스 복귀 idle 리셋용) */
+  clearLastResult: () => void;
   /**
    * 녹화 중일 때만 원본 프레임을 ref 버퍼에 push.
    * onLandmark에서 직접 무거운 연산 없이 이 함수만 호출할 것.
@@ -115,12 +117,23 @@ export function useSwingRecorder(): UseSwingRecorderResult {
     return result;
   }, []);
 
+  const clearLastResult = useCallback(() => {
+    if (isRecordingRef.current) {
+      return;
+    }
+    bufferRef.current = [];
+    startedAtMsRef.current = null;
+    setBufferedFrameCount(0);
+    setLastResult(null);
+  }, []);
+
   return {
     isRecording,
     bufferedFrameCount,
     lastResult,
     startRecording,
     stopRecording,
+    clearLastResult,
     appendRawFrame,
     appendRawFrameRef,
   };

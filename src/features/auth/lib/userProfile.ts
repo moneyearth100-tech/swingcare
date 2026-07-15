@@ -180,6 +180,42 @@ export async function saveUserProfile(
   return profile;
 }
 
+/** 주손방향만 부분 갱신 (null = 미선택, 기존 스코어링 유지) */
+export async function updateDominantHand(
+  userId: string,
+  dominantHand: DominantHand | null,
+): Promise<UserProfile> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error('Supabase 미설정');
+  }
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('users')
+    .update({
+      dominant_hand: dominantHand,
+      updated_at: now,
+    })
+    .eq('id', userId)
+    .select(PROFILE_SELECT)
+    .single();
+
+  if (error || !data) {
+    if (
+      error &&
+      (error.code === '42703' || error.message.includes('dominant_hand'))
+    ) {
+      throw new Error(
+        '주손방향 저장을 위해 dominant_hand 마이그레이션이 필요합니다.',
+      );
+    }
+    throw new Error(error?.message ?? '주손방향 저장에 실패했습니다.');
+  }
+
+  return mapRow(data as Record<string, unknown>);
+}
+
 /** 촬영 영상 라벨링·모델 개선·제3자 위탁 동의 기록 */
 export async function saveLabelingDataConsent(
   userId: string,

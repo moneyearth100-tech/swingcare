@@ -12,6 +12,9 @@ import {
   type BalanceScoreJoint,
 } from './balanceScoreConstants';
 
+/** 주손 — movementMetrics.DominantHand 와 동일 (순환 import 방지) */
+type DominantHandOpt = 'right' | 'left' | null | undefined;
+
 export function isUsable(point: Landmark | undefined): point is Landmark {
   return (
     point != null &&
@@ -158,9 +161,13 @@ function hipAngle(landmarks: PoseLandmarks): number | null {
 }
 
 /**
- * 손목: 어깨–팔꿈치–손목 (좌우 평균)
+ * 손목: 어깨–팔꿈치–손목.
+ * dominant_hand 있으면 트레일 팔만(좌타=왼·우타=오), 없으면 좌우 평균.
  */
-function wristAngle(landmarks: PoseLandmarks): number | null {
+function wristAngle(
+  landmarks: PoseLandmarks,
+  dominantHand?: DominantHandOpt,
+): number | null {
   const values: number[] = [];
   const ls = landmarks[LANDMARK_INDEX.left_shoulder];
   const le = landmarks[LANDMARK_INDEX.left_elbow];
@@ -169,10 +176,14 @@ function wristAngle(landmarks: PoseLandmarks): number | null {
   const re = landmarks[LANDMARK_INDEX.right_elbow];
   const rw = landmarks[LANDMARK_INDEX.right_wrist];
 
-  if (isUsable(ls) && isUsable(le) && isUsable(lw)) {
+  // 미설정 시 좌우 평균(기존). 우타=오른·좌타=왼 트레일만.
+  const useLeft = dominantHand == null || dominantHand === 'left';
+  const useRight = dominantHand == null || dominantHand === 'right';
+
+  if (useLeft && isUsable(ls) && isUsable(le) && isUsable(lw)) {
     values.push(angleDegAt(ls, le, lw));
   }
-  if (isUsable(rs) && isUsable(re) && isUsable(rw)) {
+  if (useRight && isUsable(rs) && isUsable(re) && isUsable(rw)) {
     values.push(angleDegAt(rs, re, rw));
   }
   return averageFinite(values);
@@ -209,6 +220,7 @@ function kneeAngle(landmarks: PoseLandmarks): number | null {
 export function jointAngleDeg(
   landmarks: PoseLandmarks,
   joint: BalanceScoreJoint,
+  dominantHand?: DominantHandOpt,
 ): number | null {
   switch (joint) {
     case 'lower_back':
@@ -218,7 +230,7 @@ export function jointAngleDeg(
     case 'hip':
       return hipAngle(landmarks);
     case 'wrist':
-      return wristAngle(landmarks);
+      return wristAngle(landmarks, dominantHand);
     case 'knee':
       return kneeAngle(landmarks);
     default: {
@@ -231,6 +243,7 @@ export function jointAngleDeg(
 export function jointAngleFromFrame(
   frame: LandmarkFrame,
   joint: BalanceScoreJoint,
+  dominantHand?: DominantHandOpt,
 ): number | null {
-  return jointAngleDeg(frame.landmarks, joint);
+  return jointAngleDeg(frame.landmarks, joint, dominantHand);
 }

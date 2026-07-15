@@ -1,6 +1,11 @@
 /** 카메라 프리뷰 + MediaPipe 포즈 + Skia 스켈레톤 + 스윙 녹화 버퍼 */
 
-import { router, useLocalSearchParams, useNavigation } from 'expo-router';
+import {
+  router,
+  useFocusEffect,
+  useLocalSearchParams,
+  useNavigation,
+} from 'expo-router';
 import {
   RNMediapipe,
   startCameraRecording,
@@ -8,7 +13,7 @@ import {
 } from '@thinksys/react-native-mediapipe';
 import * as Device from 'expo-device';
 import { File } from 'expo-file-system';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -30,13 +35,14 @@ import CameraAnglePicker, {
 import CaptureWarningBanners, {
   type CaptureWarningKind,
 } from '../components/CaptureWarningBanners';
+import DominantHandPicker from '../components/DominantHandPicker';
 import SkeletonOverlay from '../components/SkeletonOverlay';
 import SwingUploadPanel from '../components/SwingUploadPanel';
+import { useDominantHandSelection } from '../hooks/useDominantHandSelection';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
 import { useSessionSyncRetryQueue } from '../hooks/useSyncOnForeground';
-import { useAuth } from '@/features/auth/hooks/useAuth';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
 import {
   isPoseEffectivelyAbsent,
@@ -89,7 +95,6 @@ function deleteTemporaryVideo(uri: string | null): void {
 export default function SwingCaptureScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const { profile } = useAuth();
   const { mode: modeParam } = useLocalSearchParams<{ mode?: string | string[] }>();
   const mode =
     typeof modeParam === 'string'
@@ -121,7 +126,8 @@ export default function SwingCaptureScreen() {
   );
   const [cameraAngle, setCameraAngle] =
     useState<SelectableCameraAngle>('front');
-  const dominantHand = profile?.dominant_hand ?? null;
+  const { dominantHand, selectDominantHand, saving: savingHand } =
+    useDominantHandSelection();
 
   useEffect(() => {
     // 홈 탭 push(?mode=)로 들어올 때만 URL과 맞춤.
@@ -158,11 +164,49 @@ export default function SwingCaptureScreen() {
     lastResult,
     startRecording,
     stopRecording,
+    clearLastResult,
     appendRawFrameRef,
   } = useSwingRecorder();
 
   const { phases, warning: phaseWarning, segment, clear: clearPhases } =
     usePhaseSegmentation();
+
+  /**
+   * 녹화·저장 중이 아닐 때 직전 세션 결과 UI를 아이들 상태로 되돌림.
+   * 탭이 언마운트되지 않아 리포트 상세 후 복귀/탭 전환 시 결과가 남는 문제 대응.
+   */
+  const resetPostSessionUi = useCallback(() => {
+    clearPhases();
+    clearLastResult();
+    setLastStoredSession(null);
+    setLastBalanceScore(null);
+    setReportSyncStatus('idle');
+    setReportSyncError(null);
+    setVideoSaveError(null);
+  }, [clearLastResult, clearPhases]);
+
+  const isRecordingRef = useRef(isRecording);
+  const isSavingSessionRef = useRef(isSavingSession);
+  const isStartingRecordingRef = useRef(isStartingRecording);
+  const captureSegmentRef = useRef(captureSegment);
+  isRecordingRef.current = isRecording;
+  isSavingSessionRef.current = isSavingSession;
+  isStartingRecordingRef.current = isStartingRecording;
+  captureSegmentRef.current = captureSegment;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (
+        captureSegmentRef.current !== 'live' ||
+        isRecordingRef.current ||
+        isSavingSessionRef.current ||
+        isStartingRecordingRef.current
+      ) {
+        return;
+      }
+      resetPostSessionUi();
+    }, [resetPostSessionUi]),
+  );
 
   /**
    * 실시간 ↔ 업로드 전환.
@@ -184,6 +228,14 @@ export default function SwingCaptureScreen() {
           });
       }
       clearPhases();
+    }
+    if (
+      next === 'live' &&
+      !isRecording &&
+      !isSavingSession &&
+      !isStartingRecording
+    ) {
+      resetPostSessionUi();
     }
     setCaptureSegment(next);
     router.navigate(`/(tabs)/capture?mode=${next}`);
@@ -299,16 +351,12 @@ export default function SwingCaptureScreen() {
 
       if (!result || result.frames.length === 0) {
         deleteTemporaryVideo(localVideoUri);
-        clearPhases();
-        setLastStoredSession(null);
-        setLastBalanceScore(null);
-        setReportSyncStatus('idle');
-        setReportSyncError(null);
+        resetPostSessionUi();
         setIsSavingSession(false);
         return;
       }
 
-      const segmentResult = segment(result.frames);
+      const segmentResult = segment(result.frames, { dominantHand });
       const balanceScore = computeBalanceScore(
         result.frames,
         segmentResult.phases,
@@ -407,12 +455,7 @@ export default function SwingCaptureScreen() {
         });
       return;
     }
-    clearPhases();
-    setLastStoredSession(null);
-    setLastBalanceScore(null);
-    setReportSyncStatus('idle');
-    setReportSyncError(null);
-    setVideoSaveError(null);
+    resetPostSessionUi();
     setIsStartingRecording(true);
     try {
       await startCameraRecording();
@@ -540,6 +583,12 @@ export default function SwingCaptureScreen() {
                 value={cameraAngle}
                 onChange={setCameraAngle}
                 variant="panel"
+              />
+              <DominantHandPicker
+                value={dominantHand}
+                onChange={selectDominantHand}
+                variant="panel"
+                disabled={savingHand}
               />
             </View>
           ) : null}
@@ -677,6 +726,7 @@ const styles = StyleSheet.create({
   },
   anglePickerLive: {
     marginTop: 2,
+    gap: 10,
   },
   segmented: {
     flexDirection: 'row',

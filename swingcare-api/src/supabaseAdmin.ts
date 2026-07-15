@@ -53,6 +53,27 @@ export async function fetchSession(
   return data as UploadSessionRow | null;
 }
 
+/** users.dominant_hand — 좌타 구간·점수용. 없으면 null */
+export async function fetchUserDominantHand(
+  userId: string,
+): Promise<'right' | 'left' | null> {
+  const { data, error } = await getAdminClient()
+    .from('users')
+    .select('dominant_hand')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) {
+    // 마이그레이션 전 환경 등 — 우타 기본 경로 유지
+    console.warn('[fetchUserDominantHand]', error.message);
+    return null;
+  }
+  const hand = (data as { dominant_hand?: string | null } | null)?.dominant_hand;
+  if (hand === 'right' || hand === 'left') {
+    return hand;
+  }
+  return null;
+}
+
 export async function listPendingOrStuckSessions(
   limit = 20,
 ): Promise<UploadSessionRow[]> {

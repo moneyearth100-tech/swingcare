@@ -174,9 +174,9 @@ export async function analyzeVideoOnDevice(input: {
 
   report(92, '스윙 구간 찾는 중');
   const frames = validateFrames(extracted.frames);
-  const phases = segmentSwingPhases(frames).phases;
-  report(95, '점수 계산 중');
   const scoreOptions = { dominantHand: input.dominantHand ?? null };
+  const phases = segmentSwingPhases(frames, scoreOptions).phases;
+  report(95, '점수 계산 중');
   const balanceScore = computeBalanceScore(frames, phases, scoreOptions);
   const diagnosis = matchDiagnosis(balanceScore, phases, scoreOptions);
 

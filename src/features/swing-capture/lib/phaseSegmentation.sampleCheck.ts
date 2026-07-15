@@ -135,8 +135,33 @@ function main(): void {
     assert(drift <= 150, `${phase} drift too large across 10/15fps: ${drift}ms`);
   }
 
+  // 같은 궤적을 좌타(왼손목)로 넣어도 8구간이 나와야 한다.
+  const leftFrames = buildSyntheticSwing(60).map((frame) => {
+    const landmarks = frame.landmarks.map((p) => ({ ...p }));
+    landmarks[LANDMARK_INDEX.left_wrist] = {
+      ...landmarks[LANDMARK_INDEX.right_wrist],
+    };
+    landmarks[LANDMARK_INDEX.right_wrist] = {
+      x: 0.5,
+      y: 0.7,
+      z: 0,
+      visibility: 1,
+    };
+    return { ...frame, landmarks };
+  });
+  const leftResult = segmentSwingPhases(leftFrames, { dominantHand: 'left' });
+  assert(
+    leftResult.phases.length === 8,
+    `lefty expected 8 phases, got ${leftResult.phases.length}`,
+  );
+  assert(
+    leftResult.trailWristIndex === LANDMARK_INDEX.left_wrist,
+    'lefty must track left_wrist',
+  );
+
   console.log('[phaseSegmentation.sampleCheck] ok', {
     warning,
+    leftTrail: leftResult.trailWristIndex,
     phases: phases.map((p) => ({
       phase: p.phase,
       t: p.timestampMs,

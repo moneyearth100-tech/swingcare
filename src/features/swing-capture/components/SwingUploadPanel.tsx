@@ -21,7 +21,6 @@ import {
   View,
 } from 'react-native';
 
-import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   getSupabaseClient,
   isSupabaseConfigured,
@@ -39,9 +38,11 @@ import {
   normalizeAnalysisFps,
   setAnalysisFps as persistAnalysisFps,
 } from '../lib/analysisFpsSetting';
+import { useDominantHandSelection } from '../hooks/useDominantHandSelection';
 import CameraAnglePicker, {
   type SelectableCameraAngle,
 } from './CameraAnglePicker';
+import DominantHandPicker from './DominantHandPicker';
 
 const MAX_BYTES = 200 * 1024 * 1024;
 const MAX_DURATION_MS = 30_000;
@@ -223,7 +224,6 @@ async function fetchRecentAnalysisState(sessionId: string): Promise<{
 }
 
 export default function SwingUploadPanel({ bottomInset }: Props) {
-  const { profile } = useAuth();
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [analysisFps, setAnalysisFps] = useState(DEFAULT_ANALYSIS_FPS);
@@ -233,11 +233,12 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
   const [pendingVideo, setPendingVideo] = useState<PickedVideo | null>(null);
   const [uploadCameraAngle, setUploadCameraAngle] =
     useState<SelectableCameraAngle>('front');
+  const { dominantHand, selectDominantHand, saving: savingHand } =
+    useDominantHandSelection();
   const recentRef = useRef(recent);
   const maxPercentRef = useRef(0);
   recentRef.current = recent;
   const displayedProgress = normalizeAnalysisProgress(analysisProgress);
-  const dominantHand = profile?.dominant_hand ?? null;
 
   useEffect(() => {
     void getAnalysisFps().then(setAnalysisFps);
@@ -584,6 +585,13 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
               onChange={setUploadCameraAngle}
               variant="compact"
               prompt="이 영상은 정면/측면 중 어느 쪽인가요?"
+            />
+            <DominantHandPicker
+              value={dominantHand}
+              onChange={selectDominantHand}
+              variant="compact"
+              disabled={uploading || savingHand}
+              prompt="주손방향은 우타/좌타 중 어느 쪽인가요?"
             />
             <Pressable
               accessibilityRole="button"

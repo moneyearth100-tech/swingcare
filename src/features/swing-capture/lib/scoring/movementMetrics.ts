@@ -146,6 +146,18 @@ export function trailWristSide(
 }
 
 /**
+ * 구간 분할·관절각용 트레일 손목 인덱스.
+ * 미설정 시 우타(right_wrist) — 정면 우타와 동일 기본값.
+ */
+export function trailWristIndexForDominantHand(
+  dominantHand: DominantHand | null | undefined,
+): number {
+  return dominantHand === 'left'
+    ? LANDMARK_INDEX.left_wrist
+    : LANDMARK_INDEX.right_wrist;
+}
+
+/**
  * elbow→wrist 와 wrist→index 사이 각 (꼭짓점=wrist).
  * elbow / wrist / index 중 하나라도 visibility 미달이면 null.
  */

@@ -37,6 +37,7 @@ import {
   fetchSwingPlaybackSession,
   nearestFrameIndex,
 } from '../../../services/supabase/swingPlayback';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 
 /** 슬로우~정상 배속 범위 */
 const RATE_MIN = 0.25;
@@ -184,6 +185,7 @@ function RateSlider({
 
 export default function SwingReviewScreen() {
   const insets = useSafeAreaInsets();
+  const { profile } = useAuth();
   const { sessionId: rawId } = useLocalSearchParams<{ sessionId: string }>();
   const sessionId = Array.isArray(rawId) ? rawId[0] : rawId;
 
@@ -371,7 +373,9 @@ export default function SwingReviewScreen() {
           session.phases.length > 0
             ? session.phases
             : session.frames.length > 0
-              ? segmentSwingPhases(session.frames).phases
+              ? segmentSwingPhases(session.frames, {
+                  dominantHand: profile?.dominant_hand ?? null,
+                }).phases
               : [];
         setPhases(resolvedPhases);
 
@@ -426,7 +430,7 @@ export default function SwingReviewScreen() {
       cancelled = true;
       stopSkeletonLoop();
     };
-  }, [sessionId, stopSkeletonLoop]);
+  }, [sessionId, stopSkeletonLoop, profile?.dominant_hand]);
 
   useEffect(() => {
     if (!signedUrl || !player || skeletonOnly) {

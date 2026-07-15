@@ -201,10 +201,11 @@ export default function ProfileSetupScreen({
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>좌타 · 우타</Text>
+          <Text style={styles.sectionTitle}>주손방향</Text>
           <Text style={styles.sectionHint}>
-            선택하면 체중 이동 방향·손목 코킹 표시를 맞춰 줘요. 나중에
-            마이에서 바꿀 수 있어요.
+            우타·좌타를 고르면 체중 이동 방향·손목 코킹 표시를 맞춰 줘요.
+            선택하지 않아도 저장할 수 있고, 나중에 촬영·영상 업로드에서도 바꿀 수
+            있어요.
           </Text>
           <View style={styles.chips}>
             {DOMINANT_HAND_OPTIONS.map((opt) => {
@@ -213,6 +214,7 @@ export default function ProfileSetupScreen({
                 <Pressable
                   key={opt.id}
                   accessibilityRole="button"
+                  accessibilityLabel={`주손방향 ${opt.label}`}
                   accessibilityState={{ selected: active }}
                   onPress={() =>
                     setDominantHand((prev) =>

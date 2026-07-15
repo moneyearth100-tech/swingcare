@@ -11,11 +11,13 @@ import type {
   SwingPhase,
 } from './landmarkTypes';
 import { LANDMARK_INDEX } from './landmarkTypes';
+import { trailWristIndexForDominantHand } from './scoring/movementMetrics';
+import type { DominantHand } from './scoring/movementMetrics';
 
 /**
  * 트레일 손목 인덱스.
  * 실기기 검증: 오른손 들기 → right_wrist(16) 반응 확인됨 (우타 가정 MVP).
- * 좌타/카메라 반전 시 옵션으로 교체.
+ * 좌타는 trailWristIndexForDominantHand / options.trailWristIndex 로 교체.
  */
 export const DEFAULT_TRAIL_WRIST_INDEX = LANDMARK_INDEX.right_wrist;
 
@@ -49,6 +51,8 @@ export const VELOCITY_REFERENCE_INTERVAL_MS = 1000 / 15;
 export interface SegmentSwingPhasesOptions {
   /** 기본 right_wrist(16). 좌타 등이면 left_wrist 등으로 교체 */
   trailWristIndex?: number;
+  /** dominant_hand 넘기면 trailWristIndex 미지정 시 자동 매핑 */
+  dominantHand?: DominantHand | null;
   /** @deprecated 절대 임계 대신 peak ratio 사용. 호환용 하한으로만 씀 */
   finishVelocityThreshold?: number;
   finishVelocityPeakRatio?: number;
@@ -197,7 +201,9 @@ export function segmentSwingPhases(
   frames: readonly LandmarkFrame[],
   options: SegmentSwingPhasesOptions = {},
 ): SegmentSwingPhasesResult {
-  const trailWristIndex = options.trailWristIndex ?? DEFAULT_TRAIL_WRIST_INDEX;
+  const trailWristIndex =
+    options.trailWristIndex ??
+    trailWristIndexForDominantHand(options.dominantHand);
   const finishVelocityFloor =
     options.finishVelocityThreshold ?? FINISH_VELOCITY_FLOOR;
   const finishVelocityPeakRatio =

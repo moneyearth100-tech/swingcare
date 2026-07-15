@@ -500,9 +500,7 @@ export default function SwingReportDetailScreen() {
                 {showCockingRef ? <ReferenceBadge /> : null}
               </View>
               <Text style={styles.cockingHint}>
-                촬영 각도(
-                {cameraAngleLabelKo(cameraAngle ?? 'front')})에 따라 수치가
-                달라질 수 있어요
+                탑에서 트레일 손목 기준 · 정면·측면 동일 계산
               </Text>
               {cockingRows.map((row) => (
                 <View key={row.key} style={styles.metricRow}>

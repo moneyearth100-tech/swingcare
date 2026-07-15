@@ -1,61 +1,51 @@
 /**
- * 촬영 각도(정면/측면) 선택 — 실시간·업로드 공용.
- * front = 정면(마주보기), side = 측면(공이 나아갈 방향 뒤).
+ * 주손방향(우타/좌타) 선택 — 실시간·업로드 공용.
+ * CameraAnglePicker와 동일한 세그먼트 패턴.
  */
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-export type SelectableCameraAngle = 'front' | 'side';
+import {
+  DOMINANT_HAND_OPTIONS,
+  type DominantHand,
+} from '@/features/auth/lib/profileTypes';
 
-export interface CameraAnglePickerProps {
-  value: SelectableCameraAngle;
-  onChange: (angle: SelectableCameraAngle) => void;
-  /** panel: 안내 카드 포함 / compact: 세그먼트만 */
+export interface DominantHandPickerProps {
+  value: DominantHand | null;
+  onChange: (hand: DominantHand | null) => void;
+  /** panel: 카메라 오버레이용 / compact: 업로드 패널용 */
   variant?: 'panel' | 'compact';
   disabled?: boolean;
-  /** 업로드 플로우용 질문 문구 */
   prompt?: string;
 }
 
-const OPTIONS: { id: SelectableCameraAngle; label: string }[] = [
-  { id: 'front', label: '정면' },
-  { id: 'side', label: '측면' },
-];
-
-export default function CameraAnglePicker({
+export default function DominantHandPicker({
   value,
   onChange,
   variant = 'panel',
   disabled = false,
   prompt,
-}: CameraAnglePickerProps) {
-  const showGuide = variant === 'panel';
-  const title =
-    prompt ??
-    (value === 'front'
-      ? '정면에서 촬영해 주세요'
-      : '측면에서 촬영해 주세요');
-  const body =
-    value === 'front'
-      ? '정면은 어드레스하는 나를 마주보는 각도예요. 카메라가 골퍼의 얼굴을 바라보도록 세워 주세요.'
-      : '측면은 공이 나아갈 방향의 뒤에서 찍는 각도예요. 스윙면이 옆에서 보이도록 세워 주세요.';
-
+}: DominantHandPickerProps) {
   const isCompact = variant === 'compact';
+  const title = prompt ?? '주손방향을 선택해 주세요';
+  const body =
+    '우타·좌타를 고르면 체중 이동·손목 코킹 표시를 맞춰 줘요. 선택하지 않아도 분석할 수 있어요.';
 
   return (
     <View style={[styles.wrap, isCompact && styles.wrapCompact]}>
       {prompt ? <Text style={styles.prompt}>{prompt}</Text> : null}
 
       <View style={[styles.segmented, isCompact && styles.segmentedCompact]}>
-        {OPTIONS.map((item) => {
+        {DOMINANT_HAND_OPTIONS.map((item) => {
           const active = value === item.id;
           return (
             <Pressable
               key={item.id}
               accessibilityRole="button"
+              accessibilityLabel={`주손방향 ${item.label}`}
               accessibilityState={{ selected: active, disabled }}
               disabled={disabled}
-              onPress={() => onChange(item.id)}
+              onPress={() => onChange(active ? null : item.id)}
               style={[
                 styles.segmentBtn,
                 isCompact && styles.segmentBtnCompact,
@@ -82,13 +72,13 @@ export default function CameraAnglePicker({
         })}
       </View>
 
-      {showGuide ? (
-        <View style={styles.card}>
-          {!prompt ? <Text style={styles.title}>{title}</Text> : null}
-          <Text style={styles.body}>{body}</Text>
-        </View>
-      ) : (
+      {isCompact ? (
         <Text style={styles.compactHint}>{body}</Text>
+      ) : (
+        <Text style={styles.panelHint}>
+          {!prompt ? `${title} · ` : ''}
+          {body}
+        </Text>
       )}
     </View>
   );
@@ -149,27 +139,13 @@ const styles = StyleSheet.create({
   segmentLabelActiveCompact: {
     color: '#FFFFFF',
   },
-  card: {
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(22, 24, 32, 0.82)',
-    borderWidth: StyleSheet.hairlineWidth * 2,
-    borderColor: 'rgba(255,255,255,0.18)',
-    gap: 6,
-  },
-  title: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
-  body: {
+  panelHint: {
     fontSize: 12,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.78)',
     lineHeight: 17,
     textAlign: 'center',
+    paddingHorizontal: 8,
   },
   compactHint: {
     fontSize: 12,

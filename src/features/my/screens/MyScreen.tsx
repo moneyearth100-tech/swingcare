@@ -2,6 +2,7 @@
  * 마이 탭 — 프로필·구독 실데이터, 메뉴 feature flag.
  * 스크린골프·장비핏은 FEATURE_FLAGS 로 비노출 (코드 유지).
  * 코칭 마켓은 노출하되 스키마 승인 전 안내.
+ * 주손방향 변경은 촬영·영상 업로드에서 (여기는 읽기 전용 표시).
  */
 
 import { router, useFocusEffect } from 'expo-router';
@@ -163,23 +164,25 @@ export default function MyScreen() {
                 <Text style={styles.tagText}>{ageLabel}</Text>
               </View>
             ) : null}
-            {handLabel ? (
-              <View style={styles.tag}>
-                <Text style={styles.tagText}>{handLabel}</Text>
-              </View>
-            ) : null}
+            <View style={[styles.tag, !handLabel && styles.tagMuted]}>
+              <Text style={[styles.tagText, !handLabel && styles.tagTextMuted]}>
+                {handLabel ? `주손 ${handLabel}` : '주손 미설정'}
+              </Text>
+            </View>
             {injuryLabels.map((label) => (
               <View key={label} style={styles.tag}>
                 <Text style={styles.tagText}>{label}</Text>
               </View>
             ))}
-            {!ageLabel && !handLabel && injuryLabels.length === 0 ? (
+            {!ageLabel && injuryLabels.length === 0 ? (
               <View style={styles.tag}>
                 <Text style={styles.tagText}>프로필 입력</Text>
               </View>
             ) : null}
           </View>
-          <Text style={styles.cardHint}>탭하여 수정 →</Text>
+          <Text style={styles.cardHint}>
+            주손방향은 촬영·영상 업로드에서 바꿀 수 있어요 · 탭하여 수정 →
+          </Text>
         </Pressable>
 
         <View style={styles.subCard}>
@@ -319,7 +322,11 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: 'rgba(47,107,255,0.1)',
   },
+  tagMuted: {
+    backgroundColor: 'rgba(122,129,152,0.12)',
+  },
   tagText: { fontSize: 11, fontWeight: '700', color: '#2F6BFF' },
+  tagTextMuted: { color: '#7A8198' },
   cardHint: {
     marginTop: 8,
     fontSize: 11.5,

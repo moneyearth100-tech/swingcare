@@ -146,7 +146,11 @@ export function computeBalanceScore(
       const slice = framesInWindow(frames, window.startMs, window.endMs);
       const angles: number[] = [];
       for (const frame of slice) {
-        const angle = jointAngleFromFrame(frame, joint);
+        const angle = jointAngleFromFrame(
+          frame,
+          joint,
+          options?.dominantHand,
+        );
         if (angle != null) {
           angles.push(angle);
         }

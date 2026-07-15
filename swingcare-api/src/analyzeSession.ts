@@ -12,6 +12,7 @@ import type { AnalyzeJobData } from './queue.js';
 import {
   downloadVideoToBuffer,
   fetchSession,
+  fetchUserDominantHand,
   saveAnalysisResult,
   setSessionStatus,
 } from './supabaseAdmin.js';
@@ -75,9 +76,11 @@ export async function analyzeUploadSession(
 
     const tScore = Date.now();
     const frames = vision.frames;
-    const { phases } = segmentSwingPhases(frames);
-    const balanceScore = computeBalanceScore(frames, phases);
-    const diagnosis = matchDiagnosis(balanceScore, phases);
+    const dominantHand = await fetchUserDominantHand(session.user_id);
+    const scoreOptions = { dominantHand };
+    const { phases } = segmentSwingPhases(frames, scoreOptions);
+    const balanceScore = computeBalanceScore(frames, phases, scoreOptions);
+    const diagnosis = matchDiagnosis(balanceScore, phases, scoreOptions);
     scoreMs = Date.now() - tScore;
 
     await saveAnalysisResult({
