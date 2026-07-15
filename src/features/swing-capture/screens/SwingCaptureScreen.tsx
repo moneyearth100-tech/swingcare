@@ -24,6 +24,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabInset } from '@/constants/theme';
 
 import CameraPermissionGate from '../components/CameraPermissionGate';
+import CameraAnglePicker, {
+  type SelectableCameraAngle,
+} from '../components/CameraAnglePicker';
 import CaptureWarningBanners, {
   type CaptureWarningKind,
 } from '../components/CaptureWarningBanners';
@@ -33,6 +36,7 @@ import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
 import { useSessionSyncRetryQueue } from '../hooks/useSyncOnForeground';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
 import {
   isPoseEffectivelyAbsent,
@@ -85,6 +89,7 @@ function deleteTemporaryVideo(uri: string | null): void {
 export default function SwingCaptureScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const { profile } = useAuth();
   const { mode: modeParam } = useLocalSearchParams<{ mode?: string | string[] }>();
   const mode =
     typeof modeParam === 'string'
@@ -114,6 +119,9 @@ export default function SwingCaptureScreen() {
   const [captureSegment, setCaptureSegment] = useState<CaptureSegment>(
     mode === 'upload' ? 'upload' : 'live',
   );
+  const [cameraAngle, setCameraAngle] =
+    useState<SelectableCameraAngle>('front');
+  const dominantHand = profile?.dominant_hand ?? null;
 
   useEffect(() => {
     // 홈 탭 push(?mode=)로 들어올 때만 URL과 맞춤.
@@ -304,6 +312,7 @@ export default function SwingCaptureScreen() {
       const balanceScore = computeBalanceScore(
         result.frames,
         segmentResult.phases,
+        { dominantHand },
       );
       setLastBalanceScore(balanceScore);
       console.log('[balanceScore]', {
@@ -321,7 +330,7 @@ export default function SwingCaptureScreen() {
         frames: result.frames,
         phases: segmentResult.phases,
         durationMs: result.durationMs,
-        cameraAngle: 'front',
+        cameraAngle,
       });
 
       setReportSyncStatus('saving');
@@ -353,7 +362,9 @@ export default function SwingCaptureScreen() {
             }
           }
 
-          const diagnosis = matchDiagnosis(balanceScore, segmentResult.phases);
+          const diagnosis = matchDiagnosis(balanceScore, segmentResult.phases, {
+            dominantHand,
+          });
           console.log('[diagnosis]', {
             patternId: diagnosis.patternId,
             issuePhase: diagnosis.issuePhase,
@@ -523,7 +534,19 @@ export default function SwingCaptureScreen() {
           pointerEvents="box-none"
         >
           {segmentControl}
-          <CaptureWarningBanners kind={guidanceKind} />
+          {!isRecording && !lastBalanceScore ? (
+            <View style={styles.anglePickerLive}>
+              <CameraAnglePicker
+                value={cameraAngle}
+                onChange={setCameraAngle}
+                variant="panel"
+              />
+            </View>
+          ) : null}
+          <CaptureWarningBanners
+            kind={guidanceKind === 'angle_guide' ? null : guidanceKind}
+            cameraAngle={cameraAngle}
+          />
           <View style={styles.statusBar} pointerEvents="box-none">
           <Text style={styles.statusText}>
             {isRecording ? '녹화 중' : isPoseDetected ? '포즈 감지됨' : '포즈 대기 중'}
@@ -651,6 +674,9 @@ const styles = StyleSheet.create({
     zIndex: 50,
     elevation: 50,
     gap: 10,
+  },
+  anglePickerLive: {
+    marginTop: 2,
   },
   segmented: {
     flexDirection: 'row',

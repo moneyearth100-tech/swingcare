@@ -9,6 +9,9 @@ export type InjuryHistoryCode =
   | 'knee'
   | 'none';
 
+/** 타격 손 — null이면 미입력(방향성·트레일 손목 우선 표시 생략) */
+export type DominantHand = 'right' | 'left';
+
 export const AGE_GROUP_OPTIONS: { id: AgeGroup; label: string }[] = [
   { id: '20s', label: '20대' },
   { id: '30s', label: '30대' },
@@ -28,6 +31,14 @@ export const INJURY_HISTORY_OPTIONS: {
   { id: 'none', label: '없음' },
 ];
 
+export const DOMINANT_HAND_OPTIONS: {
+  id: DominantHand;
+  label: string;
+}[] = [
+  { id: 'right', label: '우타' },
+  { id: 'left', label: '좌타' },
+];
+
 export const HANDICAP_MIN = 0;
 export const HANDICAP_MAX = 54;
 export const HANDICAP_DEFAULT = 18;
@@ -38,6 +49,8 @@ export interface UserProfile {
   age_group: AgeGroup | null;
   injury_history: InjuryHistoryCode[];
   handicap: number | null;
+  /** 우타/좌타 — 선택 입력 */
+  dominant_hand: DominantHand | null;
   profile_completed_at: string | null;
   /** 영상 라벨링·모델 개선·제3자 위탁 동의 시각 */
   labeling_data_consent_at: string | null;
@@ -49,6 +62,8 @@ export interface UserProfileInput {
   age_group: AgeGroup;
   injury_history: InjuryHistoryCode[];
   handicap: number;
+  /** 선택 — 없어도 프로필 완료 가능 */
+  dominant_hand?: DominantHand | null;
 }
 
 export function isProfileComplete(

@@ -274,6 +274,8 @@ export async function uploadSwingVideoAndCreateSession(input: {
   mimeType?: string | null;
   sizeBytes?: number | null;
   durationMs: number;
+  /** front | side — 업로드 전 선택 UI에서 전달 */
+  cameraAngle?: 'front' | 'side' | 'unknown';
   onDeviceAnalysis?: UploadOnDeviceAnalysis;
 }): Promise<UploadSwingVideoResult> {
   if (!isSupabaseConfigured()) {
@@ -334,7 +336,7 @@ export async function uploadSwingVideoAndCreateSession(input: {
     capture_mode: 'upload',
     video_url: uploaded.videoUrl,
     status: analysis ? 'done' : 'pending',
-    camera_angle: 'unknown',
+    camera_angle: input.cameraAngle ?? 'unknown',
   });
 
   if (insertError) {

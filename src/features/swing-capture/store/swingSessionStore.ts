@@ -93,7 +93,7 @@ export function buildSwingSession(input: {
   phases: PhaseMarker[];
   durationMs: number;
   fps?: number;
-  /** 1폰 정면 가이드 준수 시 'front' */
+  /** 1폰 정면/측면 가이드 준수 시 front | side */
   cameraAngle?: SwingSession['cameraAngle'];
 }): SwingSession {
   const platform = Platform.OS === 'ios' ? 'ios' : 'android';

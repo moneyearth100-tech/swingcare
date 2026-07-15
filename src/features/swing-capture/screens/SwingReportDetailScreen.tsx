@@ -6,7 +6,7 @@
  */
 
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   DIAGNOSIS_TEMPLATES,
   parseDiagnosisText,
@@ -31,8 +32,15 @@ import {
   type BalanceScoreJoint,
 } from '../lib/scoring/balanceScoreConstants';
 import {
+  isWeightShiftTowardTarget,
   movementDeltaBandLabel,
+  trailWristSide,
 } from '../lib/scoring/movementMetrics';
+import {
+  cameraAngleLabelKo,
+  shouldShowReferenceBadge,
+} from '../lib/cameraAngleReliability';
+import type { CameraAngle } from '../lib/landmarkTypes';
 import { extractCoachingClip } from '../../../services/supabase/coaching';
 import {
   fetchSwingReportBySessionId,
@@ -43,6 +51,14 @@ import {
 } from '../../../services/supabase/swingPlayback';
 import { attachVideoToSwingSession } from '../../../services/supabase/swingUpload';
 import SwingVideoThumb from '../components/SwingVideoThumb';
+
+function ReferenceBadge() {
+  return (
+    <View style={styles.refBadge}>
+      <Text style={styles.refBadgeText}>참고용</Text>
+    </View>
+  );
+}
 
 async function pickCoachingVideo(): Promise<{
   uri: string;
@@ -148,6 +164,7 @@ function resolveTag(report: SwingReportRow): string {
 
 export default function SwingReportDetailScreen() {
   const insets = useSafeAreaInsets();
+  const { profile } = useAuth();
   const params = useLocalSearchParams<{ sessionId?: string }>();
   const sessionId =
     typeof params.sessionId === 'string' ? params.sessionId : null;
@@ -165,7 +182,11 @@ export default function SwingReportDetailScreen() {
   const [videoMetaLine, setVideoMetaLine] = useState(
     '탭하여 재생 · 스켈레톤 함께 표시',
   );
+  const [cameraAngle, setCameraAngle] = useState<CameraAngle | null>(null);
   const [extracting, setExtracting] = useState(false);
+
+  const dominantHand = profile?.dominant_hand ?? null;
+  const trailSide = trailWristSide(dominantHand);
 
   const load = useCallback(async () => {
     if (!sessionId) {
@@ -186,6 +207,7 @@ export default function SwingReportDetailScreen() {
       setHasReviewFrames(false);
       setStorageVideoUrl(null);
       setStorageThumbnailUrl(null);
+      setCameraAngle(null);
     } else {
       setReport(row);
       const path = media?.videoUrl ?? null;
@@ -194,6 +216,7 @@ export default function SwingReportDetailScreen() {
       setStorageThumbnailUrl(thumb);
       setHasPlayableVideo(Boolean(path));
       setHasReviewFrames(Boolean(media?.hasFrames));
+      setCameraAngle(media?.cameraAngle ?? null);
       if (media?.captureMode === 'upload') {
         setVideoLabel('업로드 스윙 영상');
         setVideoMetaLine('탭하여 재생 · 스켈레톤 함께 표시');
@@ -220,6 +243,66 @@ export default function SwingReportDetailScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const cockingRows = useMemo(() => {
+    const metrics = report?.movement_metrics;
+    if (!metrics) {
+      return [];
+    }
+    const right = {
+      key: 'right' as const,
+      label: '오른쪽',
+      value: metrics.rightWristCockingDeg,
+    };
+    const left = {
+      key: 'left' as const,
+      label: '왼쪽',
+      value: metrics.leftWristCockingDeg,
+    };
+    if (trailSide === 'right') {
+      return [
+        { ...right, primary: true, label: '오른쪽 (트레일)' },
+        { ...left, primary: false },
+      ];
+    }
+    if (trailSide === 'left') {
+      return [
+        { ...left, primary: true, label: '왼쪽 (트레일)' },
+        { ...right, primary: false },
+      ];
+    }
+    return [
+      { ...right, primary: true },
+      { ...left, primary: false },
+    ];
+  }, [report?.movement_metrics, trailSide]);
+
+  const showWeightShiftRef = shouldShowReferenceBadge(
+    'weightShift',
+    cameraAngle,
+  );
+  const showJointRef = shouldShowReferenceBadge('jointAngles', cameraAngle);
+  const showCockingRef = shouldShowReferenceBadge('wristCocking', cameraAngle);
+
+  const weightShiftTowardTarget = useMemo(() => {
+    const metrics = report?.movement_metrics;
+    if (!metrics || !dominantHand) {
+      return null;
+    }
+    if (metrics.weightShiftTowardTarget != null) {
+      return metrics.weightShiftTowardTarget;
+    }
+    if (
+      metrics.weightShiftSigned != null &&
+      Number.isFinite(metrics.weightShiftSigned)
+    ) {
+      return isWeightShiftTowardTarget(
+        metrics.weightShiftSigned,
+        dominantHand,
+      );
+    }
+    return null;
+  }, [dominantHand, report?.movement_metrics]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
@@ -330,9 +413,17 @@ export default function SwingReportDetailScreen() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>
-              스윙 밸런스 지수 상세 · 종합 {report.overall_score}
-            </Text>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle}>
+                스윙 밸런스 지수 상세 · 종합 {report.overall_score}
+              </Text>
+              {showJointRef ? <ReferenceBadge /> : null}
+            </View>
+            {cameraAngle ? (
+              <Text style={styles.angleMeta}>
+                촬영 각도 · {cameraAngleLabelKo(cameraAngle)}
+              </Text>
+            ) : null}
             {orderedJointEntries(report.joint_scores).map(({ key, value }) => {
               const warn = value < SCORE_BAND_CAUTION;
               return (
@@ -362,7 +453,10 @@ export default function SwingReportDetailScreen() {
             <View style={styles.card}>
               <Text style={styles.cardTitle}>이동 지표</Text>
               <View style={styles.metricRow}>
-                <Text style={styles.metricLabel}>체중 이동량</Text>
+                <View style={styles.metricLabelRow}>
+                  <Text style={styles.metricLabel}>체중 이동량</Text>
+                  {showWeightShiftRef ? <ReferenceBadge /> : null}
+                </View>
                 <View style={styles.metricRight}>
                   <Text style={styles.metricValue}>
                     {formatDelta(report.movement_metrics.weightShiftDelta)}
@@ -374,6 +468,11 @@ export default function SwingReportDetailScreen() {
                       {movementDeltaBandLabel(
                         report.movement_metrics.weightShiftDelta,
                       )}
+                    </Text>
+                  ) : null}
+                  {weightShiftTowardTarget != null ? (
+                    <Text style={styles.metricBand}>
+                      {weightShiftTowardTarget ? '타겟 방향' : '타겟 반대'}
                     </Text>
                   ) : null}
                 </View>
@@ -398,25 +497,35 @@ export default function SwingReportDetailScreen() {
 
               <View style={styles.cockingHead}>
                 <Text style={styles.metricLabel}>손목 코킹 (탑)</Text>
-                <View style={styles.refBadge}>
-                  <Text style={styles.refBadgeText}>참고용</Text>
-                </View>
+                {showCockingRef ? <ReferenceBadge /> : null}
               </View>
               <Text style={styles.cockingHint}>
-                촬영 각도(정면)에 따라 수치가 달라질 수 있어요
+                촬영 각도(
+                {cameraAngleLabelKo(cameraAngle ?? 'front')})에 따라 수치가
+                달라질 수 있어요
               </Text>
-              <View style={styles.metricRow}>
-                <Text style={styles.metricLabel}>오른쪽</Text>
-                <Text style={styles.metricValuePrimary}>
-                  {formatDeg(report.movement_metrics.rightWristCockingDeg)}
-                </Text>
-              </View>
-              <View style={styles.metricRow}>
-                <Text style={styles.metricLabelMuted}>왼쪽</Text>
-                <Text style={styles.metricValueMuted}>
-                  {formatDeg(report.movement_metrics.leftWristCockingDeg)}
-                </Text>
-              </View>
+              {cockingRows.map((row) => (
+                <View key={row.key} style={styles.metricRow}>
+                  <Text
+                    style={
+                      row.primary
+                        ? styles.metricLabel
+                        : styles.metricLabelMuted
+                    }
+                  >
+                    {row.label}
+                  </Text>
+                  <Text
+                    style={
+                      row.primary
+                        ? styles.metricValuePrimary
+                        : styles.metricValueMuted
+                    }
+                  >
+                    {formatDeg(row.value)}
+                  </Text>
+                </View>
+              ))}
             </View>
           ) : null}
 
@@ -619,6 +728,25 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: '#232630',
+    flexShrink: 1,
+  },
+  cardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  angleMeta: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#7A8198',
+    marginTop: -6,
+  },
+  metricLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
   },
   loadBar: { gap: 7 },
   loadBarTop: {

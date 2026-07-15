@@ -21,6 +21,7 @@ import {
   View,
 } from 'react-native';
 
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   getSupabaseClient,
   isSupabaseConfigured,
@@ -38,6 +39,9 @@ import {
   normalizeAnalysisFps,
   setAnalysisFps as persistAnalysisFps,
 } from '../lib/analysisFpsSetting';
+import CameraAnglePicker, {
+  type SelectableCameraAngle,
+} from './CameraAnglePicker';
 
 const MAX_BYTES = 200 * 1024 * 1024;
 const MAX_DURATION_MS = 30_000;
@@ -219,16 +223,21 @@ async function fetchRecentAnalysisState(sessionId: string): Promise<{
 }
 
 export default function SwingUploadPanel({ bottomInset }: Props) {
+  const { profile } = useAuth();
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [analysisFps, setAnalysisFps] = useState(DEFAULT_ANALYSIS_FPS);
   const [analysisProgress, setAnalysisProgress] =
     useState<OnDeviceAnalysisProgress | null>(null);
   const [recent, setRecent] = useState<RecentItem[]>([]);
+  const [pendingVideo, setPendingVideo] = useState<PickedVideo | null>(null);
+  const [uploadCameraAngle, setUploadCameraAngle] =
+    useState<SelectableCameraAngle>('front');
   const recentRef = useRef(recent);
   const maxPercentRef = useRef(0);
   recentRef.current = recent;
   const displayedProgress = normalizeAnalysisProgress(analysisProgress);
+  const dominantHand = profile?.dominant_hand ?? null;
 
   useEffect(() => {
     void getAnalysisFps().then(setAnalysisFps);
@@ -306,7 +315,10 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
     return () => clearInterval(id);
   }, [recent, refreshAnalyzingItems]);
 
-  const uploadPicked = async (picked: PickedVideo) => {
+  const uploadPicked = async (
+    picked: PickedVideo,
+    cameraAngle: SelectableCameraAngle,
+  ) => {
     if (
       picked.sizeBytes != null &&
       picked.sizeBytes > 0 &&
@@ -349,6 +361,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       const analysis = await analyzeVideoOnDevice({
         uri: picked.uri,
         expectedDurationMs: durationMs,
+        dominantHand,
         onProgress: (progress) => {
           updateAnalysisProgress(progress);
         },
@@ -364,6 +377,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
         mimeType: picked.mimeType,
         sizeBytes: picked.sizeBytes,
         durationMs,
+        cameraAngle,
         onDeviceAnalysis: analysis,
       });
 
@@ -381,6 +395,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       setStatus(
         `분석 완료 · ${analysis.frames.length}프레임 · 종합 ${Math.round(analysis.balanceScore.overallScore)}점`,
       );
+      setPendingVideo(null);
       setRecent((prev) => [
         {
           id: uploaded.sessionId,
@@ -404,6 +419,12 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       setAnalysisProgress(null);
       setUploading(false);
     }
+  };
+
+  const stagePickedVideo = (picked: PickedVideo) => {
+    setPendingVideo(picked);
+    setUploadCameraAngle('front');
+    setStatus(null);
   };
 
   /** Files/둘러보기 — 파일 앱에 저장된 영상용 (Android 갤러리 폴백에도 사용) */
@@ -433,7 +454,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
     }
 
     const file = picked.result;
-    await uploadPicked({
+    await stagePickedVideo({
       uri: file.uri,
       fileName: file.name || `swing_${Date.now()}.mp4`,
       mimeType: file.type || 'video/mp4',
@@ -495,7 +516,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
         asset.mimeType?.includes('quicktime')
           ? 'mov'
           : 'mp4';
-      await uploadPicked({
+      await stagePickedVideo({
         uri: asset.uri,
         fileName: asset.fileName ?? `swing_${Date.now()}.${ext}`,
         mimeType:
@@ -553,24 +574,61 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
           }
         </Text>
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="사진에서 선택"
-          disabled={uploading}
-          onPress={() => {
-            void pickFromPhotos();
-          }}
-          style={({ pressed }) => [
-            styles.primaryBtn,
-            (pressed || uploading) && styles.pressed,
-          ]}
-        >
-          {uploading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.primaryBtnText}>사진에서 선택</Text>
-          )}
-        </Pressable>
+        {pendingVideo && !uploading ? (
+          <View style={styles.angleBlock}>
+            <Text style={styles.pendingName} numberOfLines={1}>
+              {pendingVideo.fileName}
+            </Text>
+            <CameraAnglePicker
+              value={uploadCameraAngle}
+              onChange={setUploadCameraAngle}
+              variant="compact"
+              prompt="이 영상은 정면/측면 중 어느 쪽인가요?"
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="선택한 각도로 분석 시작"
+              onPress={() => {
+                void uploadPicked(pendingVideo, uploadCameraAngle);
+              }}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.primaryBtnText}>분석 시작</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setPendingVideo(null)}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.secondaryBtnText}>다른 영상 고르기</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="사진에서 선택"
+            disabled={uploading}
+            onPress={() => {
+              void pickFromPhotos();
+            }}
+            style={({ pressed }) => [
+              styles.primaryBtn,
+              (pressed || uploading) && styles.pressed,
+            ]}
+          >
+            {uploading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.primaryBtnText}>사진에서 선택</Text>
+            )}
+          </Pressable>
+        )}
 
         {displayedProgress ? (
           <View
@@ -705,6 +763,18 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 8,
     lineHeight: 18,
+  },
+  angleBlock: {
+    alignSelf: 'stretch',
+    gap: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  pendingName: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#4A5168',
+    maxWidth: '100%',
   },
   primaryBtn: {
     paddingVertical: 13,

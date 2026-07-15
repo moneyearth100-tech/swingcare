@@ -6,10 +6,14 @@ import { getSupabaseClient } from '../../../services/supabase/client';
 
 import {
   isProfileComplete,
+  type DominantHand,
   type InjuryHistoryCode,
   type UserProfile,
   type UserProfileInput,
 } from './profileTypes';
+
+const PROFILE_SELECT =
+  'id, name, age_group, injury_history, handicap, dominant_hand, profile_completed_at, labeling_data_consent_at, created_at, updated_at';
 
 function parseInjuryHistory(value: unknown): InjuryHistoryCode[] {
   if (!Array.isArray(value)) {
@@ -18,6 +22,13 @@ function parseInjuryHistory(value: unknown): InjuryHistoryCode[] {
   return value.filter(
     (item): item is InjuryHistoryCode => typeof item === 'string',
   );
+}
+
+function parseDominantHand(value: unknown): DominantHand | null {
+  if (value === 'right' || value === 'left') {
+    return value;
+  }
+  return null;
 }
 
 function mapRow(row: Record<string, unknown>): UserProfile {
@@ -30,6 +41,7 @@ function mapRow(row: Record<string, unknown>): UserProfile {
       row.handicap == null || row.handicap === ''
         ? null
         : Number(row.handicap),
+    dominant_hand: parseDominantHand(row.dominant_hand),
     profile_completed_at: (row.profile_completed_at as string | null) ?? null,
     labeling_data_consent_at:
       (row.labeling_data_consent_at as string | null) ?? null,
@@ -73,13 +85,29 @@ export async function fetchUserProfile(
 
   const { data, error } = await supabase
     .from('users')
-    .select(
-      'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
-    )
+    .select(PROFILE_SELECT)
     .eq('id', userId)
     .maybeSingle();
 
   if (error) {
+    // 019 마이그레이션 전 환경: dominant_hand 없이 폴백
+    if (
+      error.code === '42703' ||
+      error.message.includes('dominant_hand')
+    ) {
+      const legacy = await supabase
+        .from('users')
+        .select(
+          'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
+        )
+        .eq('id', userId)
+        .maybeSingle();
+      if (legacy.error || !legacy.data) {
+        console.warn('[users] fetch failed', legacy.error?.message ?? error.message);
+        return null;
+      }
+      return mapRow({ ...legacy.data, dominant_hand: null });
+    }
     console.warn('[users] fetch failed', error.message);
     return null;
   }
@@ -103,7 +131,7 @@ export async function saveUserProfile(
   }
 
   const now = new Date().toISOString();
-  const payload = {
+  const payload: Record<string, unknown> = {
     id: userId,
     age_group: input.age_group,
     injury_history: input.injury_history,
@@ -111,16 +139,37 @@ export async function saveUserProfile(
     profile_completed_at: now,
     updated_at: now,
   };
+  if (input.dominant_hand !== undefined) {
+    payload.dominant_hand = input.dominant_hand;
+  }
 
   const { data, error } = await supabase
     .from('users')
     .upsert(payload, { onConflict: 'id' })
-    .select(
-      'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
-    )
+    .select(PROFILE_SELECT)
     .single();
 
   if (error || !data) {
+    // dominant_hand 컬럼 없으면 해당 필드 제외 재시도
+    if (
+      error &&
+      (error.code === '42703' || error.message.includes('dominant_hand'))
+    ) {
+      const { dominant_hand: _omit, ...rest } = payload;
+      const retry = await supabase
+        .from('users')
+        .upsert(rest, { onConflict: 'id' })
+        .select(
+          'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
+        )
+        .single();
+      if (retry.error || !retry.data) {
+        throw new Error(
+          retry.error?.message ?? error.message ?? '프로필 저장에 실패했습니다.',
+        );
+      }
+      return mapRow({ ...retry.data, dominant_hand: null });
+    }
     throw new Error(error?.message ?? '프로필 저장에 실패했습니다.');
   }
 
@@ -148,12 +197,32 @@ export async function saveLabelingDataConsent(
       updated_at: now,
     })
     .eq('id', userId)
-    .select(
-      'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
-    )
+    .select(PROFILE_SELECT)
     .single();
 
   if (error || !data) {
+    if (
+      error &&
+      (error.code === '42703' || error.message.includes('dominant_hand'))
+    ) {
+      const retry = await supabase
+        .from('users')
+        .update({
+          labeling_data_consent_at: now,
+          updated_at: now,
+        })
+        .eq('id', userId)
+        .select(
+          'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
+        )
+        .single();
+      if (retry.error || !retry.data) {
+        throw new Error(
+          retry.error?.message ?? error.message ?? '동의 저장에 실패했습니다.',
+        );
+      }
+      return mapRow({ ...retry.data, dominant_hand: null });
+    }
     throw new Error(error?.message ?? '동의 저장에 실패했습니다.');
   }
   return mapRow(data as Record<string, unknown>);

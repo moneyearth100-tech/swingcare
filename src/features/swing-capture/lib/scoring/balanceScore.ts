@@ -29,16 +29,21 @@ import {
 } from './balanceScoreConstants';
 import {
   computeMovementMetrics,
+  type DominantHand,
   type MovementMetrics,
 } from './movementMetrics';
 
 export type { BalanceScoreJoint } from './balanceScoreConstants';
-export type { MovementMetrics } from './movementMetrics';
+export type { DominantHand, MovementMetrics } from './movementMetrics';
 export {
   BALANCE_SCORE_VERSION,
   JOINT_LABEL_KO,
   SCORE_BAND_CAUTION,
   SCORE_BAND_GOOD,
+};
+
+export type BalanceScoreOptions = {
+  dominantHand?: DominantHand | null;
 };
 
 export interface JointBalanceScore {
@@ -121,6 +126,7 @@ function mean(values: number[]): number | null {
 export function computeBalanceScore(
   frames: readonly LandmarkFrame[],
   phases: readonly PhaseMarker[],
+  options?: BalanceScoreOptions,
 ): BalanceScoreResult {
   const windows = phaseWindows(phases, frames);
   const joints = {} as Record<BalanceScoreJoint, JointBalanceScore>;
@@ -197,7 +203,7 @@ export function computeBalanceScore(
     version: BALANCE_SCORE_VERSION,
     overallScore,
     joints,
-    movementMetrics: computeMovementMetrics(frames, phases),
+    movementMetrics: computeMovementMetrics(frames, phases, options),
     warning,
   };
 }

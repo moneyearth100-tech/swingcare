@@ -20,6 +20,8 @@ import {
 } from './balanceScoreConstants';
 import {
   movementDeltaBandLabel,
+  trailWristSide,
+  type DominantHand,
   type MovementMetrics,
 } from './movementMetrics';
 
@@ -222,7 +224,10 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-function movementFacts(metrics: MovementMetrics | undefined): DiagnosisFact[] {
+function movementFacts(
+  metrics: MovementMetrics | undefined,
+  dominantHand?: DominantHand | null,
+): DiagnosisFact[] {
   if (!metrics) {
     return [];
   }
@@ -232,9 +237,18 @@ function movementFacts(metrics: MovementMetrics | undefined): DiagnosisFact[] {
     const band = movementDeltaBandLabel(ws);
     const notable = ws < MOVEMENT_DELTA_SMALL || ws >= MOVEMENT_DELTA_MEDIUM;
     if (notable || out.length === 0) {
+      let text = `체중 이동량 ${ws.toFixed(3)}${band ? ` · ${band}` : ''} (탑→임팩트)`;
+      if (
+        dominantHand &&
+        metrics.weightShiftTowardTarget != null
+      ) {
+        text += metrics.weightShiftTowardTarget
+          ? ' · 타겟 방향'
+          : ' · 타겟 반대';
+      }
       out.push({
         id: 'move:weightShift',
-        text: `체중 이동량 ${ws.toFixed(3)}${band ? ` · ${band}` : ''} (탑→임팩트)`,
+        text,
       });
     }
   }
@@ -249,12 +263,18 @@ function movementFacts(metrics: MovementMetrics | undefined): DiagnosisFact[] {
       });
     }
   }
-  // 코킹은 참고용 — 값이 있을 때만 짧게 (단정 없음)
-  const cock = metrics.rightWristCockingDeg;
+  // 코킹은 참고용 — dominant_hand 있으면 트레일 손목 우선
+  const trail = trailWristSide(dominantHand);
+  const cockSide = trail ?? 'right';
+  const cock =
+    cockSide === 'right'
+      ? metrics.rightWristCockingDeg
+      : metrics.leftWristCockingDeg;
   if (cock != null && Number.isFinite(cock)) {
+    const sideLabel = cockSide === 'right' ? '오른' : '왼';
     out.push({
       id: 'move:cocking',
-      text: `손목 코킹(탑·오른) ${cock.toFixed(1)}° · 참고용`,
+      text: `손목 코킹(탑·${sideLabel}) ${cock.toFixed(1)}° · 참고용`,
     });
   }
   return out;
@@ -263,6 +283,7 @@ function movementFacts(metrics: MovementMetrics | undefined): DiagnosisFact[] {
 function buildFacts(
   balanceScore: BalanceScoreResult,
   patternId: DiagnosisPatternId,
+  dominantHand?: DominantHand | null,
 ): DiagnosisFact[] {
   const lowest = findLowestPhaseJoints(balanceScore, 5);
   const facts: DiagnosisFact[] = [];
@@ -280,7 +301,10 @@ function buildFacts(
   }
 
   // 이동·코킹으로 채우기 (중복 id 방지, 최대 3)
-  for (const mf of movementFacts(balanceScore.movementMetrics)) {
+  for (const mf of movementFacts(
+    balanceScore.movementMetrics,
+    dominantHand,
+  )) {
     if (facts.length >= 3) {
       break;
     }
@@ -395,13 +419,18 @@ export function parseDiagnosisText(
 export function matchDiagnosis(
   balanceScore: BalanceScoreResult,
   _phases: readonly PhaseMarker[],
+  options?: { dominantHand?: DominantHand | null },
 ): DiagnosisMatchResult {
   const worst = findWorstPhaseJoint(balanceScore);
   const overall = balanceScore.overallScore;
   const patternId = pickPatternId(worst, overall);
   const base = DIAGNOSIS_TEMPLATES[patternId];
   const summary = buildSummary(patternId, overall, worst);
-  const facts = buildFacts(balanceScore, patternId);
+  const facts = buildFacts(
+    balanceScore,
+    patternId,
+    options?.dominantHand,
+  );
   const drillLine = base.drillLine;
   const diagnosisText = formatDiagnosisText({ summary, facts, drillLine });
 

@@ -132,8 +132,7 @@ export interface SwingSession {
   durationMs: number;
   deviceInfo: { platform: 'ios' | 'android'; fps: number };
   /**
-   * 촬영 각도. front=정면(마주보기), side=예약(후면 후보), unknown=미확인.
-   * 1폰 가이드 준수 저장 시 front.
+   * 촬영 각도. front=정면(마주보기), side=측면(공이 나아갈 방향 뒤), unknown=미확인.
    */
   cameraAngle?: CameraAngle;
 }

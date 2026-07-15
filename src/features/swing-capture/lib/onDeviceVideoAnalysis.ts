@@ -9,6 +9,7 @@ import type { LandmarkFrame, PhaseMarker } from './landmarkTypes';
 import {
   computeBalanceScore,
   type BalanceScoreResult,
+  type DominantHand,
 } from './scoring/balanceScore';
 import { matchDiagnosis } from './scoring/diagnosisTemplates';
 
@@ -89,6 +90,7 @@ export async function analyzeVideoOnDevice(input: {
   uri: string;
   expectedDurationMs: number;
   fps?: number;
+  dominantHand?: DominantHand | null;
   onProgress?: (progress: OnDeviceAnalysisProgress) => void;
 }): Promise<OnDeviceVideoAnalysis> {
   const analysisFps =
@@ -174,8 +176,9 @@ export async function analyzeVideoOnDevice(input: {
   const frames = validateFrames(extracted.frames);
   const phases = segmentSwingPhases(frames).phases;
   report(95, '점수 계산 중');
-  const balanceScore = computeBalanceScore(frames, phases);
-  const diagnosis = matchDiagnosis(balanceScore, phases);
+  const scoreOptions = { dominantHand: input.dominantHand ?? null };
+  const balanceScore = computeBalanceScore(frames, phases, scoreOptions);
+  const diagnosis = matchDiagnosis(balanceScore, phases, scoreOptions);
 
   return {
     frames,

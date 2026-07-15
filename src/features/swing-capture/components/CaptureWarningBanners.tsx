@@ -1,10 +1,12 @@
 /**
  * 촬영 안내·경고 — 한 슬롯에 하나만 표시.
- * 우선순위: 포즈 미인식 > 저조도 > 정면 촬영 가이드
+ * 우선순위: 포즈 미인식 > 저조도 > 촬영 각도 가이드
  */
 
 import { useEffect, useRef } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
+
+import type { SelectableCameraAngle } from './CameraAnglePicker';
 
 export type CaptureWarningKind =
   | 'pose_lost'
@@ -14,10 +16,26 @@ export type CaptureWarningKind =
 
 export interface CaptureWarningBannersProps {
   kind: CaptureWarningKind;
+  /** angle_guide일 때 정면/측면 카피 */
+  cameraAngle?: SelectableCameraAngle;
 }
 
+const ANGLE_GUIDE_COPY: Record<
+  SelectableCameraAngle,
+  { title: string; body: string }
+> = {
+  front: {
+    title: '정면에서 촬영해 주세요',
+    body: '카메라가 골퍼의 얼굴을 바라보도록 세워 주세요.',
+  },
+  side: {
+    title: '측면에서 촬영해 주세요',
+    body: '공이 나아갈 방향의 뒤에서 스윙면이 보이도록 세워 주세요.',
+  },
+};
+
 const GUIDANCE_COPY: Record<
-  Exclude<CaptureWarningKind, null>,
+  Exclude<CaptureWarningKind, 'angle_guide' | null>,
   { title: string; body?: string }
 > = {
   pose_lost: {
@@ -28,14 +46,11 @@ const GUIDANCE_COPY: Record<
     title: '조명이 어두워요',
     body: '밝은 곳에서 다시 촬영해 주세요.',
   },
-  angle_guide: {
-    title: '정면에서 촬영해 주세요',
-    body: '카메라가 골퍼의 얼굴을 바라보도록 세워 주세요.',
-  },
 };
 
 export default function CaptureWarningBanners({
   kind,
+  cameraAngle = 'front',
 }: CaptureWarningBannersProps) {
   const opacity = useRef(new Animated.Value(1)).current;
 
@@ -58,13 +73,16 @@ export default function CaptureWarningBanners({
 
     animation.start();
     return () => animation.stop();
-  }, [kind, opacity]);
+  }, [kind, cameraAngle, opacity]);
 
   if (kind == null) {
     return null;
   }
 
-  const copy = GUIDANCE_COPY[kind];
+  const copy =
+    kind === 'angle_guide'
+      ? ANGLE_GUIDE_COPY[cameraAngle]
+      : GUIDANCE_COPY[kind];
   const toneStyle =
     kind === 'pose_lost'
       ? styles.poseLost

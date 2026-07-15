@@ -19,12 +19,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../hooks/useAuth';
 import {
   AGE_GROUP_OPTIONS,
+  DOMINANT_HAND_OPTIONS,
   HANDICAP_DEFAULT,
   HANDICAP_MAX,
   HANDICAP_MIN,
   INJURY_HISTORY_OPTIONS,
   toggleInjurySelection,
   type AgeGroup,
+  type DominantHand,
   type InjuryHistoryCode,
 } from '../lib/profileTypes';
 import { saveUserProfile } from '../lib/userProfile';
@@ -47,6 +49,7 @@ export default function ProfileSetupScreen({
   const [ageGroup, setAgeGroup] = useState<AgeGroup | null>(null);
   const [injuries, setInjuries] = useState<InjuryHistoryCode[]>([]);
   const [handicap, setHandicap] = useState(HANDICAP_DEFAULT);
+  const [dominantHand, setDominantHand] = useState<DominantHand | null>(null);
   const [saving, setSaving] = useState(false);
   const [trackWidth, setTrackWidth] = useState(0);
 
@@ -62,6 +65,9 @@ export default function ProfileSetupScreen({
     }
     if (profile.handicap != null && Number.isFinite(profile.handicap)) {
       setHandicap(profile.handicap);
+    }
+    if (profile.dominant_hand) {
+      setDominantHand(profile.dominant_hand);
     }
   }, [profile]);
 
@@ -109,6 +115,7 @@ export default function ProfileSetupScreen({
         age_group: ageGroup,
         injury_history: injuries,
         handicap,
+        dominant_hand: dominantHand,
       });
       await refreshProfile();
       Alert.alert('저장', '프로필이 저장됐어요');
@@ -125,6 +132,7 @@ export default function ProfileSetupScreen({
     }
   }, [
     ageGroup,
+    dominantHand,
     handicap,
     injuries,
     mode,
@@ -179,6 +187,38 @@ export default function ProfileSetupScreen({
                   accessibilityRole="button"
                   accessibilityState={{ selected: active }}
                   onPress={() => setAgeGroup(opt.id)}
+                  style={[styles.chip, active && styles.chipActive]}
+                >
+                  <Text
+                    style={[styles.chipLabel, active && styles.chipLabelActive]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>좌타 · 우타</Text>
+          <Text style={styles.sectionHint}>
+            선택하면 체중 이동 방향·손목 코킹 표시를 맞춰 줘요. 나중에
+            마이에서 바꿀 수 있어요.
+          </Text>
+          <View style={styles.chips}>
+            {DOMINANT_HAND_OPTIONS.map((opt) => {
+              const active = dominantHand === opt.id;
+              return (
+                <Pressable
+                  key={opt.id}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  onPress={() =>
+                    setDominantHand((prev) =>
+                      prev === opt.id ? null : opt.id,
+                    )
+                  }
                   style={[styles.chip, active && styles.chipActive]}
                 >
                   <Text

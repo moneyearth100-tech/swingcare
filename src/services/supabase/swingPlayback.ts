@@ -66,6 +66,7 @@ export async function fetchSwingSessionVideoMeta(
   thumbnailUrl: string | null;
   captureMode: 'live' | 'upload' | string | null;
   status: string;
+  cameraAngle: 'front' | 'side' | 'unknown' | null;
   /** 랜드마크 프레임 존재 — 실시간(영상 없음) 리뷰용 */
   hasFrames: boolean;
 } | null> {
@@ -79,7 +80,7 @@ export async function fetchSwingSessionVideoMeta(
 
   let { data, error } = await supabase
     .from('swing_sessions')
-    .select('video_url, thumbnail_url, capture_mode, status')
+    .select('video_url, thumbnail_url, capture_mode, status, camera_angle')
     .eq('id', sessionId)
     .maybeSingle();
 
@@ -88,13 +89,28 @@ export async function fetchSwingSessionVideoMeta(
   if (error?.code === '42703' || error?.message.includes('thumbnail_url')) {
     const legacyResult = await supabase
       .from('swing_sessions')
-      .select('video_url, capture_mode, status')
+      .select('video_url, capture_mode, status, camera_angle')
       .eq('id', sessionId)
       .maybeSingle();
     data = legacyResult.data
       ? { ...legacyResult.data, thumbnail_url: null }
       : null;
     error = legacyResult.error;
+  }
+
+  if (
+    error &&
+    (error.code === '42703' || error.message.includes('camera_angle'))
+  ) {
+    const noAngle = await supabase
+      .from('swing_sessions')
+      .select('video_url, thumbnail_url, capture_mode, status')
+      .eq('id', sessionId)
+      .maybeSingle();
+    data = noAngle.data
+      ? { ...noAngle.data, camera_angle: null }
+      : null;
+    error = noAngle.error;
   }
 
   if (error || !data) {
@@ -108,12 +124,18 @@ export async function fetchSwingSessionVideoMeta(
   const thumbnailUrl = data.thumbnail_url ?? null;
   const captureMode = data.capture_mode ?? null;
   const hasFrames = Boolean(videoUrl) || captureMode === 'live';
+  const rawAngle = (data as { camera_angle?: string | null }).camera_angle;
+  const cameraAngle =
+    rawAngle === 'front' || rawAngle === 'side' || rawAngle === 'unknown'
+      ? rawAngle
+      : null;
 
   return {
     videoUrl,
     thumbnailUrl,
     captureMode,
     status: data.status ?? 'done',
+    cameraAngle,
     hasFrames,
   };
 }

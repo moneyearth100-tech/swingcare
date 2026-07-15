@@ -21,6 +21,7 @@ import { BottomTabInset } from '@/constants/theme';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import {
   AGE_GROUP_OPTIONS,
+  DOMINANT_HAND_OPTIONS,
   INJURY_HISTORY_OPTIONS,
 } from '@/features/auth/lib/profileTypes';
 import {
@@ -56,6 +57,9 @@ export default function MyScreen() {
     profile?.handicap != null ? `핸디캡 ${profile.handicap}` : '핸디캡 —';
   const ageLabel =
     AGE_GROUP_OPTIONS.find((o) => o.id === profile?.age_group)?.label ?? null;
+  const handLabel =
+    DOMINANT_HAND_OPTIONS.find((o) => o.id === profile?.dominant_hand)
+      ?.label ?? null;
   const injuryLabels = (profile?.injury_history ?? [])
     .map(
       (code) =>
@@ -159,12 +163,17 @@ export default function MyScreen() {
                 <Text style={styles.tagText}>{ageLabel}</Text>
               </View>
             ) : null}
+            {handLabel ? (
+              <View style={styles.tag}>
+                <Text style={styles.tagText}>{handLabel}</Text>
+              </View>
+            ) : null}
             {injuryLabels.map((label) => (
               <View key={label} style={styles.tag}>
                 <Text style={styles.tagText}>{label}</Text>
               </View>
             ))}
-            {!ageLabel && injuryLabels.length === 0 ? (
+            {!ageLabel && !handLabel && injuryLabels.length === 0 ? (
               <View style={styles.tag}>
                 <Text style={styles.tagText}>프로필 입력</Text>
               </View>
