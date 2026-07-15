@@ -24,11 +24,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomTabInset } from '@/constants/theme';
 
 import CameraPermissionGate from '../components/CameraPermissionGate';
-import CameraAngleGuide from '../components/CameraAngleGuide';
 import CaptureWarningBanners, {
   type CaptureWarningKind,
 } from '../components/CaptureWarningBanners';
-import PhaseTimeline from '../components/PhaseTimeline';
 import SkeletonOverlay from '../components/SkeletonOverlay';
 import SwingUploadPanel from '../components/SwingUploadPanel';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
@@ -62,8 +60,6 @@ const RECORD_BUTTON_GAP = 16;
 
 /** 포즈 미인식 경고까지 대기 (ms) */
 const POSE_LOST_WARN_MS = 2000;
-/** 상태바 아래 경고 배너 간격 */
-const WARNING_BANNER_GAP_BELOW_STATUS = 72;
 
 function deleteTemporaryVideo(uri: string | null): void {
   if (!uri) {
@@ -233,15 +229,14 @@ export default function SwingCaptureScreen() {
     return () => clearInterval(timer);
   }, [isPoseAbsent]);
 
-  const warningKind: CaptureWarningKind = useMemo(() => {
-    if (isRecording) {
+  const guidanceKind: CaptureWarningKind = useMemo(() => {
+    if (isRecording || lastBalanceScore) {
       return null;
     }
-    // 우선순위: 미인식(2) > 저조도(3) — 동시 표시 안 함
+    // 한 슬롯: 미인식 > 저조도 > 정면 가이드
     if (showPoseLostWarn && isPoseAbsent) {
       return 'pose_lost';
     }
-    // 사람은 잡히는데(몸통 OK) 전체 평균만 낮음 → 저조도
     if (
       !isPoseAbsent &&
       isPoseDetected &&
@@ -249,12 +244,13 @@ export default function SwingCaptureScreen() {
     ) {
       return 'low_light';
     }
-    return null;
+    return 'angle_guide';
   }, [
     averageVisibility,
     isPoseAbsent,
     isPoseDetected,
     isRecording,
+    lastBalanceScore,
     showPoseLostWarn,
   ]);
 
@@ -496,12 +492,6 @@ export default function SwingCaptureScreen() {
   return (
     <CameraPermissionGate>
       <View style={styles.root}>
-        <View
-          style={[styles.segmentOverlay, { top: insets.top + 8 }]}
-          pointerEvents="box-none"
-        >
-          {segmentControl}
-        </View>
         <View style={[styles.cameraWrap, cameraSize]}>
           <RNMediapipe
             width={cameraSize.width}
@@ -526,13 +516,15 @@ export default function SwingCaptureScreen() {
             width={cameraSize.width}
             height={cameraSize.height}
           />
-          <CameraAngleGuide visible={!isRecording && !lastBalanceScore} />
         </View>
 
         <View
-          style={[styles.statusBar, { top: insets.top + 64 }]}
+          style={[styles.topOverlay, { top: insets.top + 8 }]}
           pointerEvents="box-none"
         >
+          {segmentControl}
+          <CaptureWarningBanners kind={guidanceKind} />
+          <View style={styles.statusBar} pointerEvents="box-none">
           <Text style={styles.statusText}>
             {isRecording ? '녹화 중' : isPoseDetected ? '포즈 감지됨' : '포즈 대기 중'}
             {' · '}
@@ -560,9 +552,6 @@ export default function SwingCaptureScreen() {
           </Text>
           {videoSaveError ? (
             <Text style={styles.videoError}>영상 저장 실패 · 스켈레톤은 정상 저장돼요</Text>
-          ) : null}
-          {!isRecording && phases.length > 0 ? (
-            <PhaseTimeline phases={phases} />
           ) : null}
           {!isRecording && lastBalanceScore ? (
             <View style={styles.tempScoreBox}>
@@ -601,12 +590,8 @@ export default function SwingCaptureScreen() {
               ) : null}
             </View>
           ) : null}
+          </View>
         </View>
-
-        <CaptureWarningBanners
-          top={insets.top + 64 + WARNING_BANNER_GAP_BELOW_STATUS}
-          kind={warningKind}
-        />
 
         <Pressable
           accessibilityRole="button"
@@ -659,12 +644,13 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     marginBottom: 12,
   },
-  segmentOverlay: {
+  topOverlay: {
     position: 'absolute',
     left: 18,
     right: 18,
     zIndex: 50,
     elevation: 50,
+    gap: 10,
   },
   segmented: {
     flexDirection: 'row',
@@ -718,16 +704,12 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   statusBar: {
-    position: 'absolute',
-    left: 14,
-    right: 14,
     backgroundColor: 'rgba(255,255,255,0.14)',
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.18)',
     paddingHorizontal: 14,
     paddingVertical: 11,
-    zIndex: 30,
   },
   statusText: {
     color: '#fff',

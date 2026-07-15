@@ -171,14 +171,28 @@ export function nearestFrameIndex(
   if (frames.length === 0) {
     return -1;
   }
-  let best = 0;
-  let bestDist = Math.abs(frames[0].timestampMs - timeMs);
-  for (let i = 1; i < frames.length; i += 1) {
-    const dist = Math.abs(frames[i].timestampMs - timeMs);
-    if (dist < bestDist) {
-      best = i;
-      bestDist = dist;
+  if (timeMs <= frames[0].timestampMs) {
+    return 0;
+  }
+  const lastIndex = frames.length - 1;
+  if (timeMs >= frames[lastIndex].timestampMs) {
+    return lastIndex;
+  }
+
+  // 프레임은 timestampMs 오름차순으로 저장된다. 매 재생 tick마다 전체 배열을
+  // 순회하지 않고 playhead를 감싸는 두 프레임만 찾는다.
+  let low = 0;
+  let high = lastIndex;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (frames[middle].timestampMs <= timeMs) {
+      low = middle;
+    } else {
+      high = middle;
     }
   }
-  return best;
+
+  return timeMs - frames[low].timestampMs <= frames[high].timestampMs - timeMs
+    ? low
+    : high;
 }

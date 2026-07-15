@@ -19,12 +19,18 @@ import {
 import { useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import PhaseTimeline from '../components/PhaseTimeline';
+import PhaseTimeline, {
+  findCurrentPhase,
+} from '../components/PhaseTimeline';
 import SkeletonOverlay, {
   createEmptyPackedPosePoints,
   packPosePoints,
 } from '../components/SkeletonOverlay';
-import type { LandmarkFrame, PhaseMarker } from '../lib/landmarkTypes';
+import type {
+  LandmarkFrame,
+  PhaseMarker,
+  SwingPhase,
+} from '../lib/landmarkTypes';
 import { segmentSwingPhases } from '../lib/phaseSegmentation';
 import {
   createSwingVideoSignedUrl,
@@ -36,6 +42,8 @@ import {
 const RATE_MIN = 0.25;
 const RATE_MAX = 1;
 const RATE_DEFAULT = 1;
+/** 네이티브 플레이어가 전달하는 고빈도 미디어 시계를 영상 동기화의 단일 기준으로 사용 */
+const VIDEO_TIME_UPDATE_INTERVAL_SECONDS = 1 / 60;
 
 function clampRate(value: number): number {
   return Math.min(RATE_MAX, Math.max(RATE_MIN, value));
@@ -191,21 +199,27 @@ export default function SwingReviewScreen() {
   const [hint, setHint] = useState<string | null>(null);
   const [layout, setLayout] = useState({ width: 0, height: 0 });
   const [playing, setPlaying] = useState(false);
+  const [currentPhase, setCurrentPhase] = useState<SwingPhase | null>(null);
 
   const pointsSV = useSharedValue(createEmptyPackedPosePoints());
   const framesRef = useRef<LandmarkFrame[]>([]);
   framesRef.current = frames;
+  const phasesRef = useRef<PhaseMarker[]>([]);
+  phasesRef.current = phases;
   const playbackRateRef = useRef(RATE_DEFAULT);
   const skeletonTimeMsRef = useRef(0);
   const skeletonRafRef = useRef<number | null>(null);
   const skeletonLastTickRef = useRef<number | null>(null);
   const durationMsRef = useRef(0);
+  const appliedFrameIndexRef = useRef(-1);
+  const currentPhaseRef = useRef<SwingPhase | null>(null);
+  const latestMediaTimeMsRef = useRef(0);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
-    p.timeUpdateEventInterval = 1 / 30;
     p.playbackRate = RATE_DEFAULT;
     p.preservesPitch = true;
+    p.timeUpdateEventInterval = VIDEO_TIME_UPDATE_INTERVAL_SECONDS;
   });
 
   const applyPlaybackRate = useCallback(
@@ -238,6 +252,11 @@ export default function SwingReviewScreen() {
       if (index < 0) {
         return;
       }
+      // 분석 FPS보다 디스플레이 FPS가 높을 때 같은 포즈를 반복 패킹하지 않는다.
+      if (index === appliedFrameIndexRef.current) {
+        return;
+      }
+      appliedFrameIndexRef.current = index;
       const frame = list[index];
       const landmarks = mirrorSkeleton
         ? frame.landmarks.map((point) => ({ ...point, x: 1 - point.x }))
@@ -252,6 +271,34 @@ export default function SwingReviewScreen() {
     [layout.height, layout.width, mirrorSkeleton, pointsSV],
   );
 
+  const updateCurrentPhaseAtMs = useCallback((timeMs: number) => {
+    const nextPhase = findCurrentPhase(phasesRef.current, timeMs);
+    if (nextPhase === currentPhaseRef.current) {
+      return;
+    }
+    currentPhaseRef.current = nextPhase;
+    setCurrentPhase(nextPhase);
+  }, []);
+
+  const applyMediaTimeMs = useCallback(
+    (timeMs: number) => {
+      if (!Number.isFinite(timeMs)) {
+        return;
+      }
+      const safeTimeMs = Math.max(0, timeMs);
+      latestMediaTimeMsRef.current = safeTimeMs;
+      applyFrameAtMs(safeTimeMs);
+      updateCurrentPhaseAtMs(safeTimeMs);
+    },
+    [applyFrameAtMs, updateCurrentPhaseAtMs],
+  );
+
+  // 레이아웃·미러 설정·세션 프레임이 바뀌면 같은 인덱스라도 새 좌표로 다시 패킹한다.
+  useEffect(() => {
+    appliedFrameIndexRef.current = -1;
+    applyMediaTimeMs(latestMediaTimeMsRef.current);
+  }, [applyMediaTimeMs, frames]);
+
   const stopSkeletonLoop = useCallback(() => {
     if (skeletonRafRef.current != null) {
       cancelAnimationFrame(skeletonRafRef.current);
@@ -261,7 +308,7 @@ export default function SwingReviewScreen() {
   }, []);
 
   const tickSkeleton = useCallback(() => {
-    const now = Date.now();
+    const now = performance.now();
     const last = skeletonLastTickRef.current ?? now;
     skeletonLastTickRef.current = now;
     const dt = (now - last) * playbackRateRef.current;
@@ -271,13 +318,13 @@ export default function SwingReviewScreen() {
       next = next % duration;
     }
     skeletonTimeMsRef.current = next;
-    applyFrameAtMs(next);
+    applyMediaTimeMs(next);
     skeletonRafRef.current = requestAnimationFrame(tickSkeleton);
-  }, [applyFrameAtMs]);
+  }, [applyMediaTimeMs]);
 
   const startSkeletonLoop = useCallback(() => {
     stopSkeletonLoop();
-    skeletonLastTickRef.current = Date.now();
+    skeletonLastTickRef.current = performance.now();
     skeletonRafRef.current = requestAnimationFrame(tickSkeleton);
   }, [stopSkeletonLoop, tickSkeleton]);
 
@@ -297,6 +344,10 @@ export default function SwingReviewScreen() {
       setHint(null);
       setSkeletonOnly(false);
       setMirrorSkeleton(false);
+      setCurrentPhase(null);
+      currentPhaseRef.current = null;
+      appliedFrameIndexRef.current = -1;
+      latestMediaTimeMsRef.current = 0;
       skeletonTimeMsRef.current = 0;
       try {
         const session = await fetchSwingPlaybackSession(sessionId);
@@ -385,6 +436,7 @@ export default function SwingReviewScreen() {
       player.replace(signedUrl);
       player.playbackRate = playbackRateRef.current;
       player.preservesPitch = true;
+      player.timeUpdateEventInterval = VIDEO_TIME_UPDATE_INTERVAL_SECONDS;
       player.play();
       setPlaying(true);
     } catch (e) {
@@ -400,7 +452,7 @@ export default function SwingReviewScreen() {
     if (layout.width <= 0 || layout.height <= 0) {
       return;
     }
-    applyFrameAtMs(0);
+    applyMediaTimeMs(skeletonTimeMsRef.current);
     setPlaying(true);
     startSkeletonLoop();
     return () => {
@@ -413,16 +465,17 @@ export default function SwingReviewScreen() {
     frames.length,
     layout.width,
     layout.height,
-    applyFrameAtMs,
+    applyMediaTimeMs,
     startSkeletonLoop,
     stopSkeletonLoop,
   ]);
 
   useEventListener(player, 'timeUpdate', ({ currentTime }) => {
-    if (skeletonOnly) {
+    if (skeletonOnly || !signedUrl) {
       return;
     }
-    applyFrameAtMs(currentTime * 1000);
+    // 네이티브 플레이어의 미디어 시각 하나로 스켈레톤과 구간을 동시에 갱신한다.
+    applyMediaTimeMs(currentTime * 1000);
   });
 
   useEventListener(player, 'playingChange', ({ isPlaying }) => {
@@ -519,7 +572,10 @@ export default function SwingReviewScreen() {
               ) : null}
               {phases.length > 0 ? (
                 <View style={styles.phaseOverlay} pointerEvents="none">
-                  <PhaseTimeline phases={phases} />
+                  <PhaseTimeline
+                    phases={phases}
+                    currentPhase={currentPhase}
+                  />
                 </View>
               ) : null}
             </View>

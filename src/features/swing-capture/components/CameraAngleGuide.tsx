@@ -3,7 +3,8 @@
  * 실시간 각도 판별 없음. 듀얼폰 시 후면 안내와 같은 문구 패턴 재사용 전제.
  */
 
-import { StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 
 export interface CameraAngleGuideProps {
   /** 녹화 중이면 숨김 */
@@ -11,12 +12,34 @@ export interface CameraAngleGuideProps {
 }
 
 export default function CameraAngleGuide({ visible }: CameraAngleGuideProps) {
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!visible) {
+      opacity.stopAnimation();
+      return;
+    }
+
+    opacity.setValue(1);
+    const animation = Animated.sequence([
+      Animated.delay(5000),
+      Animated.timing(opacity, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: true,
+      }),
+    ]);
+
+    animation.start();
+    return () => animation.stop();
+  }, [opacity, visible]);
+
   if (!visible) {
     return null;
   }
 
   return (
-    <View style={styles.wrap} pointerEvents="none">
+    <Animated.View style={[styles.wrap, { opacity }]} pointerEvents="none">
       <View style={styles.card}>
         <View style={styles.illustration} accessibilityLabel="정면 촬영 예시">
           {/* 간단한 정면(마주보기) 실루엣 */}
@@ -38,7 +61,7 @@ export default function CameraAngleGuide({ visible }: CameraAngleGuideProps) {
           바라보도록 세워 주세요.
         </Text>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 

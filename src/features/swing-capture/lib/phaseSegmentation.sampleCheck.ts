@@ -24,7 +24,7 @@ function withWristY(y: number, x = 0.55): Landmark[] {
 }
 
 /** 우타 다운스윙을 단순화한 y 궤적 (address → top↑ → impact 빠른 하강 → finish) */
-function buildSyntheticSwing(frameCount = 60): LandmarkFrame[] {
+function buildSyntheticSwing(frameCount = 60, fps = 30): LandmarkFrame[] {
   const frames: LandmarkFrame[] = [];
   for (let i = 0; i < frameCount; i += 1) {
     const t = i / (frameCount - 1);
@@ -47,11 +47,22 @@ function buildSyntheticSwing(frameCount = 60): LandmarkFrame[] {
       x = 0.35 + u * 0.05;
     }
     frames.push({
-      timestampMs: Math.round(i * (1000 / 30)),
+      timestampMs: Math.round(i * (1000 / fps)),
       landmarks: withWristY(y, x),
     });
   }
   return frames;
+}
+
+function phaseTime(
+  frames: LandmarkFrame[],
+  phase: 'top' | 'impact' | 'finish',
+): number {
+  const marker = segmentSwingPhases(frames).phases.find((p) => p.phase === phase);
+  if (!marker) {
+    throw new Error(`missing ${phase}`);
+  }
+  return marker.timestampMs;
 }
 
 function assert(condition: boolean, message: string): void {
@@ -102,6 +113,27 @@ function main(): void {
     byPhase.impact.frameIndex > byPhase.top.frameIndex,
     'impact after top',
   );
+
+  // 피니시에서 손이 탑보다 더 높아져도 영상 끝을 top으로 오인하면 안 된다.
+  const highFinish = buildSyntheticSwing(60);
+  for (let i = 42; i < highFinish.length; i += 1) {
+    const u = (i - 42) / (highFinish.length - 1 - 42);
+    highFinish[i].landmarks = withWristY(0.65 - u * 0.55, 0.4 + u * 0.15);
+  }
+  assert(
+    phaseTime(highFinish, 'top') < highFinish[42].timestampMs,
+    'top must stay before follow-through even when finish wrist is highest',
+  );
+
+  // 같은 2초 동작을 업로드 분석 범위(10~15fps)로 샘플링해도 앵커가 크게 흔들리지 않아야 한다.
+  const at10Fps = buildSyntheticSwing(21, 10);
+  const at15Fps = buildSyntheticSwing(31, 15);
+  for (const phase of ['top', 'impact', 'finish'] as const) {
+    const drift = Math.abs(
+      phaseTime(at10Fps, phase) - phaseTime(at15Fps, phase),
+    );
+    assert(drift <= 150, `${phase} drift too large across 10/15fps: ${drift}ms`);
+  }
 
   console.log('[phaseSegmentation.sampleCheck] ok', {
     warning,

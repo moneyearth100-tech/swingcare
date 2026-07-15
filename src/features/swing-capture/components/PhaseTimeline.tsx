@@ -3,6 +3,7 @@
  * is-issue(문제 구간)는 이번 스프린트에서 비활성.
  */
 
+import { memo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import type { PhaseMarker, SwingPhase } from '../lib/landmarkTypes';
@@ -21,10 +22,40 @@ const PHASE_LABELS: Record<SwingPhase, string> = {
 
 export interface PhaseTimelineProps {
   phases: readonly PhaseMarker[];
+  /** 미디어 시계에서 계산한 현재 구간. 재생 중 timestamp 전체를 prop으로 보내지 않기 위한 경량 경로. */
+  currentPhase?: SwingPhase | null;
+  /** 현재 재생 위치. 없으면 기존 정적 타임라인으로 표시한다. */
+  currentTimestampMs?: number;
 }
 
-export default function PhaseTimeline({ phases }: PhaseTimelineProps) {
+export function findCurrentPhase(
+  phases: readonly PhaseMarker[],
+  timestampMs: number,
+): SwingPhase | null {
+  let current: PhaseMarker | null = null;
+  for (const marker of phases) {
+    if (
+      marker.timestampMs <= timestampMs &&
+      (current == null || marker.timestampMs >= current.timestampMs)
+    ) {
+      current = marker;
+    }
+  }
+  return current?.phase ?? null;
+}
+
+function PhaseTimeline({
+  phases,
+  currentPhase: currentPhaseProp,
+  currentTimestampMs,
+}: PhaseTimelineProps) {
   const byPhase = new Map(phases.map((p) => [p.phase, p]));
+  const currentPhase =
+    currentPhaseProp !== undefined
+      ? currentPhaseProp
+      : currentTimestampMs == null
+        ? null
+        : findCurrentPhase(phases, currentTimestampMs);
 
   return (
     <View style={styles.track} accessibilityRole="summary">
@@ -34,18 +65,21 @@ export default function PhaseTimeline({ phases }: PhaseTimelineProps) {
           const marker = byPhase.get(phase);
           const source = marker?.source ?? 'interpolated';
           const detected = source === 'detected';
+          const current = phase === currentPhase;
           return (
             <View key={phase} style={styles.dotWrap}>
               <View
                 style={[
                   styles.circle,
                   detected ? styles.circleDetected : styles.circleInterpolated,
+                  current && styles.circleCurrent,
                 ]}
               />
               <Text
                 style={[
                   styles.label,
                   detected ? styles.labelDetected : styles.labelInterpolated,
+                  current && styles.labelCurrent,
                 ]}
                 numberOfLines={1}
               >
@@ -58,6 +92,8 @@ export default function PhaseTimeline({ phases }: PhaseTimelineProps) {
     </View>
   );
 }
+
+export default memo(PhaseTimeline);
 
 const styles = StyleSheet.create({
   track: {
@@ -104,6 +140,17 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     opacity: 0.75,
   },
+  circleCurrent: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 3,
+    borderStyle: 'solid',
+    backgroundColor: '#FFD166',
+    borderColor: '#FFFFFF',
+    opacity: 1,
+    transform: [{ scale: 1.08 }],
+  },
   label: {
     fontSize: 8.5,
     fontWeight: '700',
@@ -114,5 +161,9 @@ const styles = StyleSheet.create({
   },
   labelInterpolated: {
     color: 'rgba(255,255,255,0.55)',
+  },
+  labelCurrent: {
+    color: '#FFD166',
+    fontWeight: '900',
   },
 });

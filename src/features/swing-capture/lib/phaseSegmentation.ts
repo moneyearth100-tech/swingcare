@@ -40,6 +40,12 @@ export const TOP_SEARCH_MIN_OFFSET_FRAMES = 3;
 /** impact 탐지 시 top 직후 스킵할 최소 프레임 */
 export const IMPACT_SEARCH_MIN_OFFSET_FRAMES = 2;
 
+/** 손목 좌표·속도에서 단일 프레임 포즈 지터를 줄이는 반경 */
+export const WRIST_SMOOTHING_RADIUS_FRAMES = 1;
+
+/** 속도 임계값을 이 기준 프레임 간격으로 환산해 분석 FPS 영향을 줄인다. */
+export const VELOCITY_REFERENCE_INTERVAL_MS = 1000 / 15;
+
 export interface SegmentSwingPhasesOptions {
   /** 기본 right_wrist(16). 좌타 등이면 left_wrist 등으로 교체 */
   trailWristIndex?: number;
@@ -94,19 +100,55 @@ function wristPoint(
   return { x: point.x, y: point.y };
 }
 
-function frameVelocity(
-  prev: LandmarkFrame,
-  next: LandmarkFrame,
+type WristSample = { x: number; y: number } | null;
+
+function smoothedWristSamples(
+  frames: readonly LandmarkFrame[],
   wristIndex: number,
+): WristSample[] {
+  return frames.map((_frame, index) => {
+    let x = 0;
+    let y = 0;
+    let count = 0;
+    const start = Math.max(0, index - WRIST_SMOOTHING_RADIUS_FRAMES);
+    const end = Math.min(
+      frames.length - 1,
+      index + WRIST_SMOOTHING_RADIUS_FRAMES,
+    );
+    for (let i = start; i <= end; i += 1) {
+      const point = wristPoint(frames[i], wristIndex);
+      if (!point) {
+        continue;
+      }
+      x += point.x;
+      y += point.y;
+      count += 1;
+    }
+    return count > 0 ? { x: x / count, y: y / count } : null;
+  });
+}
+
+/**
+ * 15fps 한 프레임 이동량으로 환산한 속도.
+ * 같은 동작이 10/12/15fps 중 어느 설정으로 분석돼도 임계값 의미를 유지한다.
+ */
+function normalizedIntervalVelocity(
+  frames: readonly LandmarkFrame[],
+  samples: readonly WristSample[],
+  nextIndex: number,
 ): number {
-  const a = wristPoint(prev, wristIndex);
-  const b = wristPoint(next, wristIndex);
-  if (!a || !b) {
+  if (nextIndex <= 0 || nextIndex >= frames.length) {
     return 0;
   }
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  return Math.hypot(dx, dy);
+  const a = samples[nextIndex - 1];
+  const b = samples[nextIndex];
+  const dtMs =
+    frames[nextIndex].timestampMs - frames[nextIndex - 1].timestampMs;
+  if (!a || !b || !Number.isFinite(dtMs) || dtMs <= 0) {
+    return 0;
+  }
+  return Math.hypot(b.x - a.x, b.y - a.y) *
+    (VELOCITY_REFERENCE_INTERVAL_MS / dtMs);
 }
 
 function marker(
@@ -129,12 +171,21 @@ function interpolatedMarker(
   frames: readonly LandmarkFrame[],
   timestampMs: number,
 ): PhaseMarker {
+  return timestampedMarker(phase, frames, timestampMs, 'interpolated');
+}
+
+function timestampedMarker(
+  phase: SwingPhase,
+  frames: readonly LandmarkFrame[],
+  timestampMs: number,
+  source: PhaseMarker['source'],
+): PhaseMarker {
   const frameIndex = nearestFrameIndex(frames, timestampMs);
   return {
     phase,
     timestampMs,
     frameIndex,
-    source: 'interpolated',
+    source,
   };
 }
 
@@ -153,6 +204,7 @@ export function segmentSwingPhases(
     options.finishVelocityPeakRatio ?? FINISH_VELOCITY_PEAK_RATIO;
   const finishStableFrameCount =
     options.finishStableFrameCount ?? FINISH_STABLE_FRAME_COUNT;
+  const wristSamples = smoothedWristSamples(frames, trailWristIndex);
 
   if (frames.length === 0) {
     return {
@@ -165,15 +217,51 @@ export function segmentSwingPhases(
   // 1) address = t=0
   const addressIndex = 0;
 
-  // 2) top = address 이후 손목 y 최솟값 (화면 위쪽이 작은 y)
+  // 2) impact 후보 = 아래로 이동하는 손목의 최대 속도.
+  // 백스윙(위쪽 이동)과 피니시(다시 머리 쪽으로 이동)를 먼저 제외해야
+  // 영상 전체 최고점인 피니시를 top으로 오인하지 않는다.
+  let impactIndex = Math.min(frames.length - 1, addressIndex + 1);
+  let maxVelocity = -1;
+  let foundDownwardImpact = false;
+  const impactCandidateStart = Math.min(
+    frames.length - 1,
+    addressIndex + TOP_SEARCH_MIN_OFFSET_FRAMES + IMPACT_SEARCH_MIN_OFFSET_FRAMES,
+  );
+  for (let i = Math.max(1, impactCandidateStart); i < frames.length; i += 1) {
+    const previous = wristSamples[i - 1];
+    const current = wristSamples[i];
+    if (!previous || !current || current.y <= previous.y) {
+      continue;
+    }
+    const velocity = normalizedIntervalVelocity(frames, wristSamples, i);
+    if (velocity > maxVelocity) {
+      maxVelocity = velocity;
+      impactIndex = i;
+      foundDownwardImpact = true;
+    }
+  }
+
+  // 아래 방향 표본이 없을 때만 전체 2D 속도 피크로 폴백한다.
+  if (!foundDownwardImpact) {
+    for (let i = Math.max(1, impactCandidateStart); i < frames.length; i += 1) {
+      const velocity = normalizedIntervalVelocity(frames, wristSamples, i);
+      if (velocity > maxVelocity) {
+        maxVelocity = velocity;
+        impactIndex = i;
+      }
+    }
+  }
+
+  // 3) top = impact 이전 손목 y 최솟값 (화면 위쪽이 작은 y)
   let topIndex = addressIndex;
   let minY = Number.POSITIVE_INFINITY;
   const topSearchStart = Math.min(
     frames.length - 1,
     addressIndex + TOP_SEARCH_MIN_OFFSET_FRAMES,
   );
-  for (let i = topSearchStart; i < frames.length; i += 1) {
-    const point = wristPoint(frames[i], trailWristIndex);
+  const topSearchEnd = Math.max(topSearchStart, impactIndex - 1);
+  for (let i = topSearchStart; i <= topSearchEnd; i += 1) {
+    const point = wristSamples[i];
     if (!point) {
       continue;
     }
@@ -183,24 +271,36 @@ export function segmentSwingPhases(
     }
   }
   if (!Number.isFinite(minY)) {
-    topIndex = Math.floor(frames.length * 0.35);
+    topIndex = Math.min(
+      Math.max(topSearchStart, Math.floor(frames.length * 0.35)),
+      topSearchEnd,
+    );
   }
 
-  // 3) impact = top 이후 프레임 간 손목 속도 최댓값
-  let impactIndex = Math.min(frames.length - 1, topIndex + 1);
-  let maxVelocity = -1;
+  // 4) impact = top 이후 아래 방향 손목 속도 최댓값.
+  // 앞 단계 후보가 너무 이른 노이즈였을 수 있으므로 top 기준으로 한 번 더 제한한다.
   const impactSearchStart = Math.min(
     frames.length - 1,
     topIndex + IMPACT_SEARCH_MIN_OFFSET_FRAMES,
   );
+  let refinedImpactIndex = impactIndex;
+  let refinedMaxVelocity = -1;
   for (let i = Math.max(1, impactSearchStart); i < frames.length; i += 1) {
-    const velocity = frameVelocity(frames[i - 1], frames[i], trailWristIndex);
-    if (velocity > maxVelocity) {
-      maxVelocity = velocity;
-      impactIndex = i;
+    const previous = wristSamples[i - 1];
+    const current = wristSamples[i];
+    if (!previous || !current || current.y <= previous.y) {
+      continue;
+    }
+    const velocity = normalizedIntervalVelocity(frames, wristSamples, i);
+    if (velocity > refinedMaxVelocity) {
+      refinedMaxVelocity = velocity;
+      refinedImpactIndex = i;
     }
   }
-  if (maxVelocity < 0) {
+  if (refinedMaxVelocity >= 0) {
+    impactIndex = refinedImpactIndex;
+    maxVelocity = refinedMaxVelocity;
+  } else if (maxVelocity < 0) {
     impactIndex = Math.min(
       frames.length - 1,
       Math.max(topIndex + 1, Math.floor(frames.length * 0.55)),
@@ -208,7 +308,7 @@ export function segmentSwingPhases(
     maxVelocity = 0;
   }
 
-  // 4) finish = impact 이후 속도가 (피크 대비 상대 임계) 이하로 N프레임 유지
+  // 5) finish = impact 이후 속도가 (피크 대비 상대 임계) 이하로 N프레임 유지
   const finishVelocityThreshold = Math.max(
     finishVelocityFloor,
     maxVelocity * finishVelocityPeakRatio,
@@ -217,11 +317,13 @@ export function segmentSwingPhases(
   let stableCount = 0;
   let foundFinish: 'threshold' | 'soft' | null = null;
   for (let i = Math.max(1, impactIndex + 1); i < frames.length; i += 1) {
-    const velocity = frameVelocity(frames[i - 1], frames[i], trailWristIndex);
+    const velocity = normalizedIntervalVelocity(frames, wristSamples, i);
     if (velocity <= finishVelocityThreshold) {
       stableCount += 1;
       if (stableCount >= finishStableFrameCount) {
-        finishIndex = i;
+        // 정지 확인이 끝난 프레임이 아니라 정지가 시작된 프레임을 피니시로 표시한다.
+        // 10~15fps에서 기존 방식은 항상 200~300ms 늦었다.
+        finishIndex = i - stableCount + 1;
         foundFinish = 'threshold';
         break;
       }
@@ -249,7 +351,7 @@ export function segmentSwingPhases(
       let sum = 0;
       let count = 0;
       for (let j = windowStart; j <= i; j += 1) {
-        sum += frameVelocity(frames[j - 1], frames[j], trailWristIndex);
+        sum += normalizedIntervalVelocity(frames, wristSamples, j);
         count += 1;
       }
       const avg = count > 0 ? sum / count : Number.POSITIVE_INFINITY;
@@ -268,12 +370,22 @@ export function segmentSwingPhases(
 
   // 순서 보정: address ≤ top ≤ impact ≤ finish
   topIndex = Math.max(topIndex, addressIndex);
-  impactIndex = Math.max(impactIndex, topIndex);
+  impactIndex = Math.max(
+    impactIndex,
+    Math.min(frames.length - 1, topIndex + 1),
+  );
   finishIndex = Math.max(finishIndex, impactIndex);
 
   const tAddress = frames[addressIndex].timestampMs;
   const tTop = frames[topIndex].timestampMs;
-  const tImpact = frames[impactIndex].timestampMs;
+  // interval(i-1 → i)의 속도를 i 시각에 귀속하면 반 프레임 늦다.
+  const rawImpactTime =
+    impactIndex > 0
+      ? (frames[impactIndex - 1].timestampMs +
+          frames[impactIndex].timestampMs) /
+        2
+      : frames[impactIndex].timestampMs;
+  const tImpact = Math.max(tTop, rawImpactTime);
   const tFinish = frames[finishIndex].timestampMs;
 
   // 보간 4개
@@ -288,7 +400,7 @@ export function segmentSwingPhases(
     interpolatedMarker('mid_backswing', frames, tMidBackswing),
     marker('top', frames, topIndex, 'detected'),
     interpolatedMarker('mid_downswing', frames, tMidDownswing),
-    marker('impact', frames, impactIndex, 'detected'),
+    timestampedMarker('impact', frames, tImpact, 'detected'),
     interpolatedMarker('mid_follow_through', frames, tMidFollow),
     marker('finish', frames, finishIndex, 'detected'),
   ];
