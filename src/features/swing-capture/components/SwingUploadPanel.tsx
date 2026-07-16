@@ -16,6 +16,7 @@ import {
   Alert,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -546,7 +547,15 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
   };
 
   return (
-    <View style={[styles.root, { paddingBottom: bottomInset + 24 }]}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[
+        styles.content,
+        { paddingBottom: bottomInset + 24 },
+      ]}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.dropzone}>
         <View style={styles.analysisBlock}>
           <View style={styles.analysisHeader}>
@@ -706,7 +715,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
           </Pressable>
         ))
       )}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -714,7 +723,10 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: '#FDFDFD',
+  },
+  content: {
     paddingTop: 8,
+    flexGrow: 1,
   },
   dropzone: {
     marginHorizontal: 20,
