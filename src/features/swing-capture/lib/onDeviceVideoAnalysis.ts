@@ -5,6 +5,7 @@ import {
   normalizeAnalysisFps,
 } from './analysisFpsSetting';
 import { segmentSwingPhases } from './phaseSegmentation';
+import { trimSwingWindow } from './trimSwingWindow';
 import type { LandmarkFrame, PhaseMarker } from './landmarkTypes';
 import {
   computeBalanceScore,
@@ -173,8 +174,13 @@ export async function analyzeVideoOnDevice(input: {
   }
 
   report(92, '스윙 구간 찾는 중');
-  const frames = validateFrames(extracted.frames);
+  const rawFrames = validateFrames(extracted.frames);
   const scoreOptions = { dominantHand: input.dominantHand ?? null };
+  const trimResult = trimSwingWindow(rawFrames, {
+    ...scoreOptions,
+    logTag: '[trimSwingWindow][upload]',
+  });
+  const frames = trimResult.frames;
   const phases = segmentSwingPhases(frames, scoreOptions).phases;
   report(95, '점수 계산 중');
   const balanceScore = computeBalanceScore(frames, phases, scoreOptions);
@@ -186,9 +192,15 @@ export async function analyzeVideoOnDevice(input: {
     fps: isFiniteNumber(extracted.fps)
       ? extracted.fps
       : analysisFps,
-    durationMs: isFiniteNumber(extracted.durationMs)
-      ? extracted.durationMs
-      : input.expectedDurationMs,
+    durationMs:
+      frames.length > 0
+        ? Math.max(
+            frames[frames.length - 1].timestampMs - frames[0].timestampMs,
+            1,
+          )
+        : isFiniteNumber(extracted.durationMs)
+          ? extracted.durationMs
+          : input.expectedDurationMs,
     detectedFrameCount: isFiniteNumber(extracted.detectedFrameCount)
       ? extracted.detectedFrameCount
       : frames.length,

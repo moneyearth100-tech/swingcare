@@ -39,11 +39,14 @@ import DominantHandPicker from '../components/DominantHandPicker';
 import SkeletonOverlay from '../components/SkeletonOverlay';
 import SwingUploadPanel from '../components/SwingUploadPanel';
 import { useDominantHandSelection } from '../hooks/useDominantHandSelection';
+import { useAddressReadyCue } from '../hooks/useAddressReadyCue';
+import { useFinishAutoStop } from '../hooks/useFinishAutoStop';
 import { usePhaseSegmentation } from '../hooks/usePhaseSegmentation';
 import { usePoseLandmarks } from '../hooks/usePoseLandmarks';
 import { useSwingRecorder } from '../hooks/useSwingRecorder';
 import { useSessionSyncRetryQueue } from '../hooks/useSyncOnForeground';
 import { createEmptyPackedPosePoints } from '../lib/packedPosePoints';
+import { trimSwingWindow } from '../lib/trimSwingWindow';
 import {
   isPoseEffectivelyAbsent,
   LOW_LIGHT_AVG_VISIBILITY,
@@ -164,9 +167,62 @@ export default function SwingCaptureScreen() {
     lastResult,
     startRecording,
     stopRecording,
+    cancelRecording,
     clearLastResult,
     appendRawFrameRef,
+    onBufferedFrameRef,
   } = useSwingRecorder();
+
+  const {
+    phase: addressReadyPhase,
+    voiceEnabled: addressReadyVoiceEnabled,
+    speechAvailable: addressReadySpeechAvailable,
+    setVoiceEnabled: setAddressReadyVoiceEnabled,
+    silenceSpeech: silenceAddressReadySpeech,
+    onRecordingFrame: onAddressReadyFrame,
+  } = useAddressReadyCue({
+    dominantHand,
+    isRecording,
+  });
+
+  /**
+   * 게이트 3 자동정지 → 수동 종료와 동일 저장 파이프라인.
+   * finalizeRecording 은 아래에서 정의 후 ref 에 심음.
+   */
+  const finalizeRecordingRef = useRef<() => void>(() => {});
+  const finalizeInFlightRef = useRef(false);
+
+  const {
+    phase: finishAutoStopPhase,
+    onRecordingFrame: onFinishAutoStopFrame,
+    cancelPendingStop: cancelFinishAutoStop,
+  } = useFinishAutoStop({
+    dominantHand,
+    isRecording,
+    addressReadyPhase,
+    onRequestStop: (reason) => {
+      console.log('[SwingCapture] Gate3 requestStop', { reason });
+      finalizeRecordingRef.current();
+    },
+  });
+
+  // ref 로 고정 — speechAvailable/voiceEnabled 토글 때 wiring cleanup 으로
+  // 프레임이 빠지며 fire 를 놓치지 않게.
+  const onAddressReadyFrameRef = useRef(onAddressReadyFrame);
+  onAddressReadyFrameRef.current = onAddressReadyFrame;
+  const onFinishAutoStopFrameRef = useRef(onFinishAutoStopFrame);
+  onFinishAutoStopFrameRef.current = onFinishAutoStopFrame;
+
+  useEffect(() => {
+    onBufferedFrameRef.current = (frame) => {
+      onAddressReadyFrameRef.current(frame.landmarks, frame.timestampMs);
+      onFinishAutoStopFrameRef.current(frame.landmarks, frame.timestampMs);
+    };
+    console.log('[SwingCapture] address+finish frame wiring attached');
+    return () => {
+      onBufferedFrameRef.current = null;
+    };
+  }, [onBufferedFrameRef]);
 
   const { phases, warning: phaseWarning, segment, clear: clearPhases } =
     usePhaseSegmentation();
@@ -194,19 +250,94 @@ export default function SwingCaptureScreen() {
   isStartingRecordingRef.current = isStartingRecording;
   captureSegmentRef.current = captureSegment;
 
+  /**
+   * 진행 중 촬영을 저장 없이 폐기 — 하단 탭 이탈/촬영 탭 재탭.
+   * 저장 중(isSavingSession)에는 건드리지 않음.
+   */
+  const abortInProgressCapture = useCallback(() => {
+    if (isSavingSessionRef.current) {
+      return;
+    }
+    const wasStarting = isStartingRecordingRef.current;
+    const wasRecording = isRecordingRef.current;
+    const hadNativeVideo = nativeVideoRecordingRef.current;
+    if (!wasStarting && !wasRecording && !hadNativeVideo) {
+      return;
+    }
+
+    if (wasStarting) {
+      setIsStartingRecording(false);
+    }
+    if (wasRecording) {
+      cancelFinishAutoStop();
+      cancelRecording();
+    }
+    if (hadNativeVideo) {
+      nativeVideoRecordingRef.current = false;
+      void stopCameraRecording()
+        .then((uri) => deleteTemporaryVideo(uri))
+        .catch((error) => {
+          console.warn('[live video] abort discard failed', error);
+        });
+    }
+    silenceAddressReadySpeech();
+    resetPostSessionUi();
+    finalizeInFlightRef.current = false;
+    console.log('[SwingCapture] aborted in-progress capture', {
+      wasStarting,
+      wasRecording,
+      hadNativeVideo,
+    });
+  }, [
+    cancelFinishAutoStop,
+    cancelRecording,
+    resetPostSessionUi,
+    silenceAddressReadySpeech,
+  ]);
+
+  const abortInProgressCaptureRef = useRef(abortInProgressCapture);
+  abortInProgressCaptureRef.current = abortInProgressCapture;
+  const resetPostSessionUiRef = useRef(resetPostSessionUi);
+  resetPostSessionUiRef.current = resetPostSessionUi;
+  const silenceAddressReadySpeechRef = useRef(silenceAddressReadySpeech);
+  silenceAddressReadySpeechRef.current = silenceAddressReadySpeech;
+
   useFocusEffect(
     useCallback(() => {
+      // 리뷰/리포트 복귀 시 TTS 잔여·직전 결과 UI 정리.
+      // 녹화/시작 중에는 silence·reset 금지 — 같은 화면에서 TTS 를 죽이면 안 됨.
       if (
-        captureSegmentRef.current !== 'live' ||
-        isRecordingRef.current ||
-        isSavingSessionRef.current ||
-        isStartingRecordingRef.current
+        captureSegmentRef.current === 'live' &&
+        !isRecordingRef.current &&
+        !isSavingSessionRef.current &&
+        !isStartingRecordingRef.current &&
+        !nativeVideoRecordingRef.current
       ) {
-        return;
+        silenceAddressReadySpeechRef.current();
+        resetPostSessionUiRef.current();
       }
-      resetPostSessionUi();
-    }, [resetPostSessionUi]),
+
+      return () => {
+        // 탭/스택 이탈 시 진행 중 녹화 폐기 → 재진입 시 Gate 2 재 arm 가능
+        // deps 없이 ref 로 호출 — callback identity 변경으로 녹화 중 cleanup 되는 것 방지
+        abortInProgressCaptureRef.current();
+      };
+    }, []),
   );
+
+  // 촬영 탭 재탭(이미 포커스) 시에도 녹화 중이면 리셋. 다른 탭은 blur cleanup이 담당.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('tabPress', () => {
+      if (
+        isRecordingRef.current ||
+        isStartingRecordingRef.current ||
+        nativeVideoRecordingRef.current
+      ) {
+        abortInProgressCaptureRef.current();
+      }
+    });
+    return unsubscribe;
+  }, [navigation]);
 
   /**
    * 실시간 ↔ 업로드 전환.
@@ -218,6 +349,7 @@ export default function SwingCaptureScreen() {
       return;
     }
     if (next === 'upload' && isRecording) {
+      cancelFinishAutoStop();
       stopRecording();
       if (nativeVideoRecordingRef.current) {
         nativeVideoRecordingRef.current = false;
@@ -228,6 +360,7 @@ export default function SwingCaptureScreen() {
           });
       }
       clearPhases();
+      finalizeInFlightRef.current = false;
     }
     if (
       next === 'live' &&
@@ -328,13 +461,19 @@ export default function SwingCaptureScreen() {
     return `구간 ${phases.length} (탐지 ${detected} · 보간 ${interpolated})`;
   }, [phases]);
 
-  const handleRecordPress = async () => {
-    if (isStartingRecording || isSavingSession) {
+  const finalizeRecording = useCallback(() => {
+    if (finalizeInFlightRef.current || isSavingSession || isStartingRecording) {
+      return;
+    }
+    if (!isRecordingRef.current) {
       return;
     }
 
-    if (isRecording) {
-      setIsSavingSession(true);
+    cancelFinishAutoStop();
+    finalizeInFlightRef.current = true;
+    setIsSavingSession(true);
+
+    void (async () => {
       const result = stopRecording();
       let localVideoUri: string | null = null;
       if (nativeVideoRecordingRef.current) {
@@ -353,12 +492,18 @@ export default function SwingCaptureScreen() {
         deleteTemporaryVideo(localVideoUri);
         resetPostSessionUi();
         setIsSavingSession(false);
+        finalizeInFlightRef.current = false;
         return;
       }
 
-      const segmentResult = segment(result.frames, { dominantHand });
+      const trimResult = trimSwingWindow(result.frames, {
+        dominantHand,
+        logTag: '[trimSwingWindow][live]',
+      });
+      const analysisFrames = trimResult.frames;
+      const segmentResult = segment(analysisFrames, { dominantHand });
       const balanceScore = computeBalanceScore(
-        result.frames,
+        analysisFrames,
         segmentResult.phases,
         { dominantHand },
       );
@@ -372,12 +517,19 @@ export default function SwingCaptureScreen() {
         ),
         movement: balanceScore.movementMetrics,
         warning: balanceScore.warning,
+        trimWarning: trimResult.warning,
       });
 
+      const trimmedDurationMs =
+        analysisFrames.length > 0
+          ? analysisFrames[analysisFrames.length - 1].timestampMs -
+            analysisFrames[0].timestampMs
+          : result.durationMs;
+
       const session = buildSwingSession({
-        frames: result.frames,
+        frames: analysisFrames,
         phases: segmentResult.phases,
-        durationMs: result.durationMs,
+        durationMs: Math.max(trimmedDurationMs, 1),
         cameraAngle,
       });
 
@@ -452,7 +604,29 @@ export default function SwingCaptureScreen() {
         .finally(() => {
           deleteTemporaryVideo(localVideoUri);
           setIsSavingSession(false);
+          finalizeInFlightRef.current = false;
         });
+    })();
+  }, [
+    cameraAngle,
+    cancelFinishAutoStop,
+    dominantHand,
+    isSavingSession,
+    isStartingRecording,
+    resetPostSessionUi,
+    segment,
+    stopRecording,
+  ]);
+
+  finalizeRecordingRef.current = finalizeRecording;
+
+  const handleRecordPress = async () => {
+    if (isStartingRecording || isSavingSession) {
+      return;
+    }
+
+    if (isRecording) {
+      finalizeRecording();
       return;
     }
     resetPostSessionUi();
@@ -470,6 +644,8 @@ export default function SwingCaptureScreen() {
         '스켈레톤 분석은 계속할 수 있지만 영상은 저장되지 않아요. Dev Client를 새로 빌드했는지 확인해 주세요.',
       );
     } finally {
+      // Gate 2 arm 은 useAddressReadyCue 의 isRecording effect 가 담당
+      // Gate 3 arm 은 useFinishAutoStop 의 isRecording effect 가 담당
       startRecording();
       setIsStartingRecording(false);
     }
@@ -598,29 +774,94 @@ export default function SwingCaptureScreen() {
           />
           <View style={styles.statusBar} pointerEvents="box-none">
           <Text style={styles.statusText}>
-            {isRecording ? '녹화 중' : isPoseDetected ? '포즈 감지됨' : '포즈 대기 중'}
+            {isSavingSession
+              ? '저장 중'
+              : isRecording
+                ? finishAutoStopPhase === 'finish_pad' ||
+                  finishAutoStopPhase === 'stopping' ||
+                  finishAutoStopPhase === 'timeout'
+                  ? '완료'
+                  : finishAutoStopPhase === 'swing' ||
+                      addressReadyPhase === 'skipped_swing_started'
+                    ? '스윙 감지'
+                    : addressReadyPhase === 'ready'
+                      ? '스윙하세요'
+                      : addressReadyPhase === 'stabilizing'
+                        ? '준비 중…'
+                        : '준비 중'
+              : isPoseDetected
+                ? '포즈 감지됨'
+                : '포즈 대기 중'}
             {' · '}
             live {frameCount}
             {isRecording ? ` · buf ${bufferedFrameCount}` : ''}
             {' · '}
             vis {averageVisibility.toFixed(2)}
           </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{
+              selected: addressReadyVoiceEnabled,
+              disabled: !addressReadySpeechAvailable,
+            }}
+            accessibilityLabel={
+              !addressReadySpeechAvailable
+                ? '안내 음성은 Dev Client 재빌드 후 사용 가능 (expo-audio)'
+                : addressReadyVoiceEnabled
+                  ? '스윙 안내 음성 끄기'
+                  : '스윙 안내 음성 켜기'
+            }
+            disabled={!addressReadySpeechAvailable}
+            onPress={() => {
+              setAddressReadyVoiceEnabled(!addressReadyVoiceEnabled);
+            }}
+            style={({ pressed }) => [
+              styles.voiceToggle,
+              addressReadyVoiceEnabled &&
+                addressReadySpeechAvailable &&
+                styles.voiceToggleOn,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.voiceToggleText}>
+              안내 음성{' '}
+              {!addressReadySpeechAvailable
+                ? Platform.OS === 'ios'
+                  ? '재빌드 필요(expo-audio)'
+                  : '재빌드 필요(ExpoSpeech)'
+                : addressReadyVoiceEnabled
+                  ? 'ON'
+                  : 'OFF'}
+            </Text>
+          </Pressable>
           <Text style={styles.statusSub}>
-            {isSavingSession
-              ? '세션 저장 중…'
-              : lastResult
-                ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms${
-                    phaseSummary ? ` · ${phaseSummary}` : ''
-                  }${
-                    lastStoredSession
-                      ? ` · 저장 ${lastStoredSession.syncStatus}${
-                          lastStoredSession.lastSyncError
-                            ? ` (${lastStoredSession.lastSyncError})`
-                            : ''
-                        }`
-                      : ''
-                  }${phaseWarning ? ` · ${phaseWarning}` : ''}`
-                : 'Skia 스켈레톤 · 녹화 종료 시 구간 분할·로컬 저장'}
+            {isRecording
+              ? finishAutoStopPhase === 'finish_pad' ||
+                finishAutoStopPhase === 'stopping'
+                ? '피니시 감지 · 잠시 후 종료돼요'
+                : finishAutoStopPhase === 'timeout'
+                  ? '시간 초과 · 녹화를 종료해요'
+                  : finishAutoStopPhase === 'swing' ||
+                      addressReadyPhase === 'skipped_swing_started'
+                    ? '스윙을 감지했어요'
+                    : addressReadyPhase === 'ready'
+                      ? '준비됐습니다 · 스윙하세요'
+                      : '어드레스 자세를 잠시 유지해 주세요'
+              : isSavingSession
+                ? '세션 저장 중…'
+                : lastResult
+                  ? `직전 녹화: ${lastResult.frames.length}프레임 / ${lastResult.durationMs}ms${
+                      phaseSummary ? ` · ${phaseSummary}` : ''
+                    }${
+                      lastStoredSession
+                        ? ` · 저장 ${lastStoredSession.syncStatus}${
+                            lastStoredSession.lastSyncError
+                              ? ` (${lastStoredSession.lastSyncError})`
+                              : ''
+                          }`
+                        : ''
+                    }${phaseWarning ? ` · ${phaseWarning}` : ''}`
+                  : 'Skia 스켈레톤 · 녹화 종료 시 구간 분할·로컬 저장'}
           </Text>
           {videoSaveError ? (
             <Text style={styles.videoError}>영상 저장 실패 · 스켈레톤은 정상 저장돼요</Text>
@@ -799,6 +1040,28 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  voiceToggle: {
+    alignSelf: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  voiceToggleOn: {
+    backgroundColor: 'rgba(137,113,234,0.35)',
+    borderColor: 'rgba(201,184,255,0.55)',
+  },
+  voiceToggleText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  pressed: {
+    opacity: 0.85,
   },
   videoError: {
     marginTop: 4,

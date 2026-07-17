@@ -3,7 +3,10 @@
 import { Platform } from 'react-native';
 
 import { BLAZEPOSE_LANDMARK_COUNT } from './landmarkTypes';
-import { mapNormalizedToView } from './mapLandmarkToView';
+import {
+  mapNormalizedToView,
+  type CoverAlign,
+} from './mapLandmarkToView';
 
 /** packed: [viewX, viewY, visibility] * 33 — 이미 뷰 픽셀로 변환된 값 */
 export type PackedPosePoints = number[];
@@ -17,6 +20,8 @@ export interface PackPosePointsOptions {
   viewHeight: number;
   imageWidth: number;
   imageHeight: number;
+  /** 기본: Android start / iOS stretch. 리뷰 cover 영상은 center 권장 */
+  align?: CoverAlign;
 }
 
 /**
@@ -28,7 +33,9 @@ export function packPosePoints(
 ): PackedPosePoints {
   const packed = createEmptyPackedPosePoints();
   const count = Math.min(landmarks.length, BLAZEPOSE_LANDMARK_COUNT);
-  const align = Platform.OS === 'android' ? 'start' : 'stretch';
+  const align =
+    options.align ??
+    (Platform.OS === 'android' ? 'start' : 'stretch');
 
   for (let i = 0; i < count; i += 1) {
     const point = landmarks[i];

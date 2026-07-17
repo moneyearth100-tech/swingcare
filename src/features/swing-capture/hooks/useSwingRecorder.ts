@@ -23,6 +23,11 @@ export interface UseSwingRecorderResult {
   lastResult: SwingRecordingResult | null;
   startRecording: () => void;
   stopRecording: () => SwingRecordingResult | null;
+  /**
+   * 진행 중 녹화를 저장 없이 폐기 (탭 이탈·탭 재탭 리셋용).
+   * lastResult는 건드리지 않음 — 호출측에서 clearLastResult/reset UI.
+   */
+  cancelRecording: () => void;
   /** 녹화 중이 아닐 때 직전 결과·버퍼 카운트만 비움 (포커스 복귀 idle 리셋용) */
   clearLastResult: () => void;
   /**
@@ -33,6 +38,13 @@ export interface UseSwingRecorderResult {
   /** usePoseLandmarks에 안정적으로 넘기기 위한 ref */
   appendRawFrameRef: MutableRefObject<
     ((landmarks: PoseLandmarks) => void) | null
+  >;
+  /**
+   * 버퍼에 push된 직후 호출 (게이트 2 어드레스 큐 · 게이트 3 피니시 자동정지 등).
+   * append와 동일한 timestampMs를 넘긴다.
+   */
+  onBufferedFrameRef: MutableRefObject<
+    ((frame: LandmarkFrame) => void) | null
   >;
 }
 
@@ -50,6 +62,10 @@ export function useSwingRecorder(): UseSwingRecorderResult {
   const isRecordingRef = useRef(false);
   const startedAtMsRef = useRef<number | null>(null);
   const bufferRef = useRef<LandmarkFrame[]>([]);
+  /** appendRawFrame 보다 먼저 선언 — 콜백이 닫는 ref가 항상 초기화되게 */
+  const onBufferedFrameRef = useRef<((frame: LandmarkFrame) => void) | null>(
+    null,
+  );
 
   const appendRawFrame = useCallback((landmarks: PoseLandmarks) => {
     if (!isRecordingRef.current || startedAtMsRef.current == null) {
@@ -57,10 +73,12 @@ export function useSwingRecorder(): UseSwingRecorderResult {
     }
 
     const timestampMs = Date.now() - startedAtMsRef.current;
-    bufferRef.current.push({
+    const frame: LandmarkFrame = {
       timestampMs,
       landmarks,
-    });
+    };
+    bufferRef.current.push(frame);
+    onBufferedFrameRef.current?.(frame);
 
     const count = bufferRef.current.length;
     if (count === 1 || count % BUFFER_COUNT_UI_INTERVAL === 0) {
@@ -117,6 +135,18 @@ export function useSwingRecorder(): UseSwingRecorderResult {
     return result;
   }, []);
 
+  const cancelRecording = useCallback(() => {
+    if (!isRecordingRef.current) {
+      return;
+    }
+    isRecordingRef.current = false;
+    startedAtMsRef.current = null;
+    bufferRef.current = [];
+    setIsRecording(false);
+    setBufferedFrameCount(0);
+    console.log('[useSwingRecorder] cancel');
+  }, []);
+
   const clearLastResult = useCallback(() => {
     if (isRecordingRef.current) {
       return;
@@ -133,8 +163,10 @@ export function useSwingRecorder(): UseSwingRecorderResult {
     lastResult,
     startRecording,
     stopRecording,
+    cancelRecording,
     clearLastResult,
     appendRawFrame,
     appendRawFrameRef,
+    onBufferedFrameRef,
   };
 }

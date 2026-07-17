@@ -7,6 +7,9 @@ import {
 import {
   segmentSwingPhases,
 } from '../../src/features/swing-capture/lib/phaseSegmentation.ts';
+import {
+  trimSwingWindow,
+} from '../../src/features/swing-capture/lib/trimSwingWindow.ts';
 
 import type { AnalyzeJobData } from './queue.js';
 import {
@@ -75,20 +78,30 @@ export async function analyzeUploadSession(
     extractMs = Date.now() - tExtract;
 
     const tScore = Date.now();
-    const frames = vision.frames;
+    const rawFrames = vision.frames;
     const dominantHand = await fetchUserDominantHand(session.user_id);
     const scoreOptions = { dominantHand };
+    const trimResult = trimSwingWindow(rawFrames, {
+      ...scoreOptions,
+      logTag: '[trimSwingWindow][api]',
+    });
+    const frames = trimResult.frames;
     const { phases } = segmentSwingPhases(frames, scoreOptions);
     const balanceScore = computeBalanceScore(frames, phases, scoreOptions);
     const diagnosis = matchDiagnosis(balanceScore, phases, scoreOptions);
     scoreMs = Date.now() - tScore;
+
+    const trimmedDurationMs =
+      frames.length > 0
+        ? frames[frames.length - 1].timestampMs - frames[0].timestampMs
+        : vision.durationMs;
 
     await saveAnalysisResult({
       sessionId: session.id,
       userId: session.user_id,
       frames,
       phases,
-      durationMs: vision.durationMs,
+      durationMs: Math.max(trimmedDurationMs, 1),
       fps: vision.fps,
       overallScore: balanceScore.overallScore,
       jointScores: Object.fromEntries(
