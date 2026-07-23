@@ -83,6 +83,9 @@ export function persistLocalSwingVideo(input: {
     const dest = new File(dir, `${input.sessionId}${ext}`);
 
     if (dest.uri === input.sourceUri || dest.uri === decodeURI(input.sourceUri)) {
+      if (!dest.exists || (typeof dest.size === 'number' && dest.size <= 0)) {
+        return { ok: false, message: '로컬 영상 파일이 비어 있어요' };
+      }
       return { ok: true, uri: dest.uri };
     }
 
@@ -91,9 +94,17 @@ export function persistLocalSwingVideo(input: {
     }
 
     const source = new File(input.sourceUri);
-    source.copy(dest);
+    if (!source.exists) {
+      return { ok: false, message: '임시 영상 파일을 찾을 수 없어요' };
+    }
 
-    if (!dest.exists) {
+    try {
+      source.move(dest);
+    } catch {
+      source.copy(dest);
+    }
+
+    if (!dest.exists || (typeof dest.size === 'number' && dest.size <= 0)) {
       return { ok: false, message: '로컬 영상 복사에 실패했어요' };
     }
     return { ok: true, uri: dest.uri };

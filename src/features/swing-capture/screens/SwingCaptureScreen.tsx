@@ -62,6 +62,7 @@ import { matchDiagnosis } from '../lib/scoring/diagnosisTemplates';
 import { persistLocalSwingVideo } from '../lib/localSwingVideo';
 import {
   buildSwingSession,
+  createSwingSessionId,
   saveSwingSessionLocalFirst,
   setStoredSwingSessionLocalVideo,
   type StoredSwingSession,
@@ -259,7 +260,8 @@ export default function SwingCaptureScreen() {
    * 저장 중(isSavingSession)에는 건드리지 않음.
    */
   const abortInProgressCapture = useCallback(() => {
-    if (isSavingSessionRef.current) {
+    // 저장 파이프라인 중에는 탭 이탈로 영상을 지우지 않음
+    if (isSavingSessionRef.current || finalizeInFlightRef.current) {
       return;
     }
     const wasStarting = isStartingRecordingRef.current;
@@ -475,6 +477,7 @@ export default function SwingCaptureScreen() {
 
     cancelFinishAutoStop();
     finalizeInFlightRef.current = true;
+    isSavingSessionRef.current = true;
     setIsSavingSession(true);
 
     void (async () => {
@@ -495,6 +498,7 @@ export default function SwingCaptureScreen() {
       if (!result || result.frames.length === 0) {
         deleteTemporaryVideo(localVideoUri);
         resetPostSessionUi();
+        isSavingSessionRef.current = false;
         setIsSavingSession(false);
         finalizeInFlightRef.current = false;
         return;
@@ -531,7 +535,33 @@ export default function SwingCaptureScreen() {
             analysisFrames[0].timestampMs
           : result.durationMs;
 
+      const sessionId = createSwingSessionId();
+      // 네트워크 sync 전에 Documents로 이동 — cache/tmp eviction 으로 영상 유실 방지
+      let persistedVideoUri: string | null = null;
+      if (localVideoUri) {
+        const persisted = persistLocalSwingVideo({
+          sessionId,
+          sourceUri: localVideoUri,
+          fileName: `live_${sessionId}.mp4`,
+          mimeType: 'video/mp4',
+        });
+        if (persisted.ok) {
+          persistedVideoUri = persisted.uri;
+          if (persisted.uri !== localVideoUri) {
+            deleteTemporaryVideo(localVideoUri);
+          }
+          setVideoSaveError(null);
+          console.log('[live video] persisted before sync', sessionId);
+        } else {
+          setVideoSaveError(persisted.message);
+          console.warn('[live video] local persist failed', persisted.message);
+          // 복사 실패해도 원본이 남아 있으면 일단 연결
+          persistedVideoUri = localVideoUri;
+        }
+      }
+
       const session = buildSwingSession({
+        id: sessionId,
         frames: analysisFrames,
         phases: segmentResult.phases,
         durationMs: Math.max(trimmedDurationMs, 1),
@@ -540,36 +570,17 @@ export default function SwingCaptureScreen() {
 
       setReportSyncStatus('saving');
       setReportSyncError(null);
-      let keptLocalVideo = false;
       void saveSwingSessionLocalFirst(session)
         .then(async (stored) => {
           setLastStoredSession(stored);
 
-          // 원본은 Documents에 보관 — 리뷰/리포트는 로컬 재생, Storage는 코칭 시에만.
-          if (localVideoUri) {
-            const persisted = persistLocalSwingVideo({
-              sessionId: stored.id,
-              sourceUri: localVideoUri,
-              fileName: `live_${stored.id}.mp4`,
-              mimeType: 'video/mp4',
-            });
-            const uriToKeep = persisted.ok ? persisted.uri : localVideoUri;
+          if (persistedVideoUri) {
             const withVideo = await setStoredSwingSessionLocalVideo(
               stored.id,
-              uriToKeep,
+              persistedVideoUri,
             );
             if (withVideo) {
               setLastStoredSession(withVideo);
-            }
-            keptLocalVideo = true;
-            if (persisted.ok && persisted.uri !== localVideoUri) {
-              deleteTemporaryVideo(localVideoUri);
-            } else if (!persisted.ok) {
-              setVideoSaveError(persisted.message);
-              console.warn('[live video] local persist failed', persisted.message);
-            } else {
-              setVideoSaveError(null);
-              console.log('[live video] kept local', stored.id);
             }
           }
 
@@ -616,14 +627,16 @@ export default function SwingCaptureScreen() {
             ...session,
             syncStatus: 'error',
             lastSyncError: 'local save failed',
+            localVideoUri: persistedVideoUri,
           });
           setReportSyncStatus('error');
           setReportSyncError('local save failed');
         })
         .finally(() => {
-          if (!keptLocalVideo) {
+          if (!persistedVideoUri) {
             deleteTemporaryVideo(localVideoUri);
           }
+          isSavingSessionRef.current = false;
           setIsSavingSession(false);
           finalizeInFlightRef.current = false;
         });
@@ -655,19 +668,20 @@ export default function SwingCaptureScreen() {
     try {
       await startCameraRecording();
       nativeVideoRecordingRef.current = true;
+      // Gate 2 arm 은 useAddressReadyCue 의 isRecording effect 가 담당
+      // Gate 3 arm 은 useFinishAutoStop 의 isRecording effect 가 담당
+      startRecording();
     } catch (error) {
+      nativeVideoRecordingRef.current = false;
       const message =
         error instanceof Error ? error.message : '네이티브 영상 녹화를 시작하지 못했어요';
       setVideoSaveError(message);
       console.warn('[live video] start failed', error);
       Alert.alert(
         '영상 녹화 시작 실패',
-        '스켈레톤 분석은 계속할 수 있지만 영상은 저장되지 않아요. Dev Client를 새로 빌드했는지 확인해 주세요.',
+        '카메라 영상 녹화를 시작하지 못했어요. 다시 시도해 주세요.',
       );
     } finally {
-      // Gate 2 arm 은 useAddressReadyCue 의 isRecording effect 가 담당
-      // Gate 3 arm 은 useFinishAutoStop 의 isRecording effect 가 담당
-      startRecording();
       setIsStartingRecording(false);
     }
   };

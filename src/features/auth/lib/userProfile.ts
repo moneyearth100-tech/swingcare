@@ -68,8 +68,19 @@ export async function ensureUserProfileRow(
     id: userId,
   });
   if (insertError && insertError.code !== '23505') {
-    console.warn('[users] ensure insert failed', insertError.message);
-    return null;
+    // 트리거가 거의 동시에 만든 경우 등 — upsert 로 한 번 더 보장
+    const { error: upsertError } = await supabase.from('users').upsert(
+      { id: userId },
+      { onConflict: 'id', ignoreDuplicates: true },
+    );
+    if (upsertError) {
+      console.warn(
+        '[users] ensure insert failed',
+        insertError.message,
+        upsertError.message,
+      );
+      return fetchUserProfile(userId);
+    }
   }
 
   return fetchUserProfile(userId);
@@ -226,32 +237,42 @@ export async function saveLabelingDataConsent(
   }
   await ensureUserProfileRow(userId);
   const now = new Date().toISOString();
+
+  // update+single 은 행이 없거나 RLS로 0건이면
+  // "cannot coerce the result to a single json object" 가 난다.
+  // upsert + maybeSingle 로 행 보장.
   const { data, error } = await supabase
     .from('users')
-    .update({
-      labeling_data_consent_at: now,
-      updated_at: now,
-    })
-    .eq('id', userId)
+    .upsert(
+      {
+        id: userId,
+        labeling_data_consent_at: now,
+        updated_at: now,
+      },
+      { onConflict: 'id' },
+    )
     .select(PROFILE_SELECT)
-    .single();
+    .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
     if (
-      error &&
-      (error.code === '42703' || error.message.includes('dominant_hand'))
+      error.code === '42703' ||
+      error.message.includes('dominant_hand')
     ) {
       const retry = await supabase
         .from('users')
-        .update({
-          labeling_data_consent_at: now,
-          updated_at: now,
-        })
-        .eq('id', userId)
+        .upsert(
+          {
+            id: userId,
+            labeling_data_consent_at: now,
+            updated_at: now,
+          },
+          { onConflict: 'id' },
+        )
         .select(
           'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
         )
-        .single();
+        .maybeSingle();
       if (retry.error || !retry.data) {
         throw new Error(
           retry.error?.message ?? error.message ?? '동의 저장에 실패했습니다.',
@@ -259,7 +280,10 @@ export async function saveLabelingDataConsent(
       }
       return mapRow({ ...retry.data, dominant_hand: null });
     }
-    throw new Error(error?.message ?? '동의 저장에 실패했습니다.');
+    throw new Error(error.message);
+  }
+  if (!data) {
+    throw new Error('동의 저장 후 프로필을 읽지 못했어요. 잠시 후 다시 시도해 주세요.');
   }
   return mapRow(data as Record<string, unknown>);
 }

@@ -402,7 +402,7 @@ index 1dc36b8..544aae1 100644
    private fun returnLivestreamResult(
      result: PoseLandmarkerResult,
 diff --git a/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt b/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt
-index 8b61fa3..3f89879 100644
+index 8b61fa3..cb39c21 100644
 --- a/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt
 +++ b/node_modules/@thinksys/react-native-mediapipe/android/src/main/java/com/tsmediapipe/fragment/CameraFragment.kt
 @@ -17,11 +17,20 @@ import androidx.camera.core.Camera
@@ -476,7 +476,7 @@ index 8b61fa3..3f89879 100644
        preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
      } catch (exc: Exception) {
        Log.e(TAG, "Use case binding failed", exc)
-@@ -233,7 +263,76 @@ class CameraFragment : Fragment(), PoseLandmarkerHelper.LandmarkerListener {
+@@ -233,7 +263,81 @@ class CameraFragment : Fragment(), PoseLandmarkerHelper.LandmarkerListener {
      }
    }
  
@@ -495,7 +495,12 @@ index 8b61fa3..3f89879 100644
 +    // 녹화 직전에도 광학 1배 재고정 (기기별 자동 줌 방지)
 +    camera?.cameraControl?.setZoomRatio(1.0f)
 +
-+    val file = File(requireContext().cacheDir, "swingcare_live_${System.currentTimeMillis()}.mp4")
++    val outDir = File(requireContext().filesDir, "swing-live-tmp")
++    if (!outDir.exists()) {
++      outDir.mkdirs()
++    }
++    // cacheDir 은 OEM이 공격적으로 비울 수 있음 — filesDir 에 녹화 후 JS가 Documents로 이동
++    val file = File(outDir, "swingcare_live_${System.currentTimeMillis()}.mp4")
 +    recordingFile = file
 +    startRecordingPromise = promise
 +    val options = FileOutputOptions.Builder(file).build()

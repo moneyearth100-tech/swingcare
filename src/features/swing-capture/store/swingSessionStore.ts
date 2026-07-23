@@ -46,6 +46,11 @@ function createId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/** 영상 파일명과 세션 id를 맞출 때 사용 */
+export function createSwingSessionId(): string {
+  return createId();
+}
+
 async function readAll(): Promise<StoredSwingSession[]> {
   if (cache) {
     return cache;
@@ -95,6 +100,8 @@ export function buildSwingSession(input: {
   phases: PhaseMarker[];
   durationMs: number;
   fps?: number;
+  /** 미리 확보한 id (영상 Documents 파일명과 맞출 때) */
+  id?: string;
   /** 1폰 정면/측면 가이드 준수 시 front | side */
   cameraAngle?: SwingSession['cameraAngle'];
 }): SwingSession {
@@ -109,7 +116,7 @@ export function buildSwingSession(input: {
       : 0);
 
   return {
-    id: createId(),
+    id: input.id ?? createId(),
     userId: null,
     createdAt: new Date().toISOString(),
     frames: input.frames,
