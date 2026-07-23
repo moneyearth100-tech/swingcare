@@ -25,7 +25,7 @@ type Props = {
 
 export default function CaptureConsentGate({ children }: Props) {
   const insets = useSafeAreaInsets();
-  const { user, profile, refreshProfile, isLoading } = useAuth();
+  const { profile, refresh, isLoading } = useAuth();
   const [checked, setChecked] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -44,19 +44,17 @@ export default function CaptureConsentGate({ children }: Props) {
     }
     setSaving(true);
     try {
-      let userId = user?.id ?? null;
-      if (!userId) {
-        const anon = await ensureAnonymousUser();
-        userId = anon.userId;
-        if (!userId) {
-          throw new Error(
-            anon.errorMessage ?? '로그인을 준비하지 못했어요. 잠시 후 다시 시도해 주세요.',
-          );
-        }
-        await refreshProfile();
+      // 항상 서버 검증된 세션을 확보한 뒤 저장 (stale user.id → RLS 방지)
+      const anon = await ensureAnonymousUser();
+      if (!anon.userId) {
+        throw new Error(
+          anon.errorMessage ??
+            '로그인을 준비하지 못했어요. 잠시 후 다시 시도해 주세요.',
+        );
       }
-      await saveLabelingDataConsent(userId);
-      await refreshProfile();
+      await saveLabelingDataConsent(anon.userId);
+      // session state 동기화까지 포함
+      await refresh();
     } catch (e) {
       Alert.alert(
         '저장 실패',
@@ -65,7 +63,7 @@ export default function CaptureConsentGate({ children }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [checked, refreshProfile, user?.id]);
+  }, [checked, refresh]);
 
   if (isLoading) {
     return (

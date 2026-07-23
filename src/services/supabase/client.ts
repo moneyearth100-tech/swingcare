@@ -65,6 +65,7 @@ export type EnsureAnonymousResult = {
 
 /**
  * 익명 로그인. 실패 시 Dashboard 문구만 보여주지 않고 서버 에러를 그대로 남긴다.
+ * getSession 만 믿으면 만료 JWT 로 RLS 가 깨질 수 있어 getUser/refresh 로 검증한다.
  */
 export async function ensureAnonymousUser(): Promise<EnsureAnonymousResult> {
   const supabase = getSupabaseClient();
@@ -77,14 +78,28 @@ export async function ensureAnonymousUser(): Promise<EnsureAnonymousResult> {
 
   try {
     const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-    if (sessionError) {
-      console.warn('[supabase] getSession', sessionError.message);
+      data: { user: verifiedUser },
+      error: userError,
+    } = await supabase.auth.getUser();
+    if (userError) {
+      console.warn('[supabase] getUser', userError.message);
     }
-    if (session?.user?.id) {
-      return { userId: session.user.id, errorMessage: null };
+    if (verifiedUser?.id) {
+      return { userId: verifiedUser.id, errorMessage: null };
+    }
+
+    // 로컬 세션은 있는데 서버 검증 실패 → 리프레시 후 재검증
+    const {
+      data: { session: localSession },
+    } = await supabase.auth.getSession();
+    if (localSession?.refresh_token) {
+      const { data: refreshed, error: refreshError } =
+        await supabase.auth.refreshSession();
+      if (refreshError) {
+        console.warn('[supabase] refreshSession', refreshError.message);
+      } else if (refreshed.user?.id) {
+        return { userId: refreshed.user.id, errorMessage: null };
+      }
     }
 
     const { data, error } = await supabase.auth.signInAnonymously();
@@ -105,4 +120,15 @@ export async function ensureAnonymousUser(): Promise<EnsureAnonymousResult> {
     console.warn('[supabase] anonymous sign-in exception', message);
     return { userId: null, errorMessage: message };
   }
+}
+
+/** 현재 요청에 실릴 auth.uid() 와 같은 검증된 유저 id */
+export async function requireAuthenticatedUserId(): Promise<string> {
+  const anon = await ensureAnonymousUser();
+  if (!anon.userId) {
+    throw new Error(
+      anon.errorMessage ?? '로그인을 준비하지 못했어요. 잠시 후 다시 시도해 주세요.',
+    );
+  }
+  return anon.userId;
 }

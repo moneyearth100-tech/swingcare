@@ -2,7 +2,10 @@
  * public.users 프로필 조회·저장.
  */
 
-import { getSupabaseClient } from '../../../services/supabase/client';
+import {
+  getSupabaseClient,
+  requireAuthenticatedUserId,
+} from '../../../services/supabase/client';
 
 import {
   isProfileComplete,
@@ -14,6 +17,9 @@ import {
 
 const PROFILE_SELECT =
   'id, name, age_group, injury_history, handicap, dominant_hand, profile_completed_at, labeling_data_consent_at, created_at, updated_at';
+
+const PROFILE_SELECT_LEGACY =
+  'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at';
 
 function parseInjuryHistory(value: unknown): InjuryHistoryCode[] {
   if (!Array.isArray(value)) {
@@ -50,40 +56,76 @@ function mapRow(row: Record<string, unknown>): UserProfile {
   };
 }
 
+function isMissingColumnError(error: { code?: string; message: string }): boolean {
+  return (
+    error.code === '42703' ||
+    error.message.includes('dominant_hand') ||
+    error.message.includes('does not exist')
+  );
+}
+
+function isRlsError(error: { code?: string; message: string }): boolean {
+  const msg = error.message.toLowerCase();
+  return (
+    error.code === '42501' ||
+    msg.includes('row-level security') ||
+    msg.includes('rls')
+  );
+}
+
+function isMissingRpcError(error: { code?: string; message: string }): boolean {
+  const msg = error.message.toLowerCase();
+  return (
+    error.code === 'PGRST202' ||
+    error.code === '42883' ||
+    msg.includes('could not find the function') ||
+    msg.includes('function public.save_labeling_data_consent') ||
+    msg.includes('function public.ensure_own_user_row')
+  );
+}
+
 /** 없으면 행 생성 후 반환 (트리거 미적용 환경 대비) */
 export async function ensureUserProfileRow(
-  userId: string,
+  userId?: string,
 ): Promise<UserProfile | null> {
   const supabase = getSupabaseClient();
   if (!supabase) {
     return null;
   }
 
-  const existing = await fetchUserProfile(userId);
+  let uid = userId;
+  try {
+    uid = await requireAuthenticatedUserId();
+  } catch {
+    if (!uid) {
+      return null;
+    }
+  }
+
+  const existing = await fetchUserProfile(uid);
   if (existing) {
     return existing;
   }
 
-  const { error: insertError } = await supabase.from('users').insert({
-    id: userId,
-  });
-  if (insertError && insertError.code !== '23505') {
-    // 트리거가 거의 동시에 만든 경우 등 — upsert 로 한 번 더 보장
-    const { error: upsertError } = await supabase.from('users').upsert(
-      { id: userId },
-      { onConflict: 'id', ignoreDuplicates: true },
-    );
-    if (upsertError) {
-      console.warn(
-        '[users] ensure insert failed',
-        insertError.message,
-        upsertError.message,
-      );
-      return fetchUserProfile(userId);
-    }
+  // 1) security definer RPC (RLS INSERT 회피)
+  const rpc = await supabase.rpc('ensure_own_user_row');
+  if (!rpc.error && rpc.data) {
+    return mapRow(rpc.data as Record<string, unknown>);
+  }
+  if (rpc.error && !isMissingRpcError(rpc.error)) {
+    console.warn('[users] ensure_own_user_row', rpc.error.message);
   }
 
-  return fetchUserProfile(userId);
+  // 2) 직접 insert (본인 id 만)
+  const { error: insertError } = await supabase.from('users').insert({
+    id: uid,
+  });
+  if (insertError && insertError.code !== '23505') {
+    console.warn('[users] ensure insert failed', insertError.message);
+    return fetchUserProfile(uid);
+  }
+
+  return fetchUserProfile(uid);
 }
 
 export async function fetchUserProfile(
@@ -102,19 +144,17 @@ export async function fetchUserProfile(
 
   if (error) {
     // 019 마이그레이션 전 환경: dominant_hand 없이 폴백
-    if (
-      error.code === '42703' ||
-      error.message.includes('dominant_hand')
-    ) {
+    if (isMissingColumnError(error)) {
       const legacy = await supabase
         .from('users')
-        .select(
-          'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
-        )
+        .select(PROFILE_SELECT_LEGACY)
         .eq('id', userId)
         .maybeSingle();
       if (legacy.error || !legacy.data) {
-        console.warn('[users] fetch failed', legacy.error?.message ?? error.message);
+        console.warn(
+          '[users] fetch failed',
+          legacy.error?.message ?? error.message,
+        );
         return null;
       }
       return mapRow({ ...legacy.data, dominant_hand: null });
@@ -141,9 +181,15 @@ export async function saveUserProfile(
     throw new Error('기존 통증·부상 이력을 하나 이상 선택해 주세요.');
   }
 
+  const uid = await requireAuthenticatedUserId();
+  if (uid !== userId) {
+    throw new Error('로그인 세션이 바뀌었어요. 다시 시도해 주세요.');
+  }
+
+  await ensureUserProfileRow(uid);
+
   const now = new Date().toISOString();
   const payload: Record<string, unknown> = {
-    id: userId,
     age_group: input.age_group,
     injury_history: input.injury_history,
     handicap: input.handicap,
@@ -154,26 +200,23 @@ export async function saveUserProfile(
     payload.dominant_hand = input.dominant_hand;
   }
 
+  // upsert 대신 update — INSERT WITH CHECK / role 충돌 회피
   const { data, error } = await supabase
     .from('users')
-    .upsert(payload, { onConflict: 'id' })
+    .update(payload)
+    .eq('id', uid)
     .select(PROFILE_SELECT)
-    .single();
+    .maybeSingle();
 
   if (error || !data) {
-    // dominant_hand 컬럼 없으면 해당 필드 제외 재시도
-    if (
-      error &&
-      (error.code === '42703' || error.message.includes('dominant_hand'))
-    ) {
+    if (error && isMissingColumnError(error)) {
       const { dominant_hand: _omit, ...rest } = payload;
       const retry = await supabase
         .from('users')
-        .upsert(rest, { onConflict: 'id' })
-        .select(
-          'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
-        )
-        .single();
+        .update(rest)
+        .eq('id', uid)
+        .select(PROFILE_SELECT_LEGACY)
+        .maybeSingle();
       if (retry.error || !retry.data) {
         throw new Error(
           retry.error?.message ?? error.message ?? '프로필 저장에 실패했습니다.',
@@ -201,6 +244,13 @@ export async function updateDominantHand(
     throw new Error('Supabase 미설정');
   }
 
+  const uid = await requireAuthenticatedUserId();
+  if (uid !== userId) {
+    throw new Error('로그인 세션이 바뀌었어요. 다시 시도해 주세요.');
+  }
+
+  await ensureUserProfileRow(uid);
+
   const now = new Date().toISOString();
   const { data, error } = await supabase
     .from('users')
@@ -208,15 +258,12 @@ export async function updateDominantHand(
       dominant_hand: dominantHand,
       updated_at: now,
     })
-    .eq('id', userId)
+    .eq('id', uid)
     .select(PROFILE_SELECT)
-    .single();
+    .maybeSingle();
 
   if (error || !data) {
-    if (
-      error &&
-      (error.code === '42703' || error.message.includes('dominant_hand'))
-    ) {
+    if (error && isMissingColumnError(error)) {
       throw new Error(
         '주손방향 저장을 위해 dominant_hand 마이그레이션이 필요합니다.',
       );
@@ -229,49 +276,55 @@ export async function updateDominantHand(
 
 /** 촬영 영상 라벨링·모델 개선·제3자 위탁 동의 기록 */
 export async function saveLabelingDataConsent(
-  userId: string,
+  _userId?: string,
 ): Promise<UserProfile | null> {
   const supabase = getSupabaseClient();
   if (!supabase) {
     throw new Error('Supabase 미설정');
   }
-  await ensureUserProfileRow(userId);
-  const now = new Date().toISOString();
 
-  // update+single 은 행이 없거나 RLS로 0건이면
-  // "cannot coerce the result to a single json object" 가 난다.
-  // upsert + maybeSingle 로 행 보장.
+  // 호출자 userId 보다 실제 JWT 의 uid 를 우선 — RLS 불일치 방지
+  const uid = await requireAuthenticatedUserId();
+
+  // 1) security definer RPC (권장 경로)
+  const rpc = await supabase.rpc('save_labeling_data_consent');
+  if (!rpc.error && rpc.data) {
+    return mapRow(rpc.data as Record<string, unknown>);
+  }
+  if (rpc.error && !isMissingRpcError(rpc.error)) {
+    // RPC 는 있는데 실패 → 폴백 전에 원인 로그
+    console.warn('[users] save_labeling_data_consent rpc', rpc.error.message);
+    if (isRlsError(rpc.error) || rpc.error.message.includes('not authenticated')) {
+      throw new Error(
+        '로그인 세션이 만료됐어요. 앱을 다시 실행한 뒤 동의해 주세요.',
+      );
+    }
+    // RPC 실패여도 아래 update 폴백 시도
+  }
+
+  // 2) 행 보장 후 update only (upsert INSERT 회피)
+  await ensureUserProfileRow(uid);
+  const now = new Date().toISOString();
   const { data, error } = await supabase
     .from('users')
-    .upsert(
-      {
-        id: userId,
-        labeling_data_consent_at: now,
-        updated_at: now,
-      },
-      { onConflict: 'id' },
-    )
+    .update({
+      labeling_data_consent_at: now,
+      updated_at: now,
+    })
+    .eq('id', uid)
     .select(PROFILE_SELECT)
     .maybeSingle();
 
   if (error) {
-    if (
-      error.code === '42703' ||
-      error.message.includes('dominant_hand')
-    ) {
+    if (isMissingColumnError(error)) {
       const retry = await supabase
         .from('users')
-        .upsert(
-          {
-            id: userId,
-            labeling_data_consent_at: now,
-            updated_at: now,
-          },
-          { onConflict: 'id' },
-        )
-        .select(
-          'id, name, age_group, injury_history, handicap, profile_completed_at, labeling_data_consent_at, created_at, updated_at',
-        )
+        .update({
+          labeling_data_consent_at: now,
+          updated_at: now,
+        })
+        .eq('id', uid)
+        .select(PROFILE_SELECT_LEGACY)
         .maybeSingle();
       if (retry.error || !retry.data) {
         throw new Error(
@@ -280,10 +333,48 @@ export async function saveLabelingDataConsent(
       }
       return mapRow({ ...retry.data, dominant_hand: null });
     }
+    if (isRlsError(error)) {
+      throw new Error(
+        '동의 저장 권한이 없어요. 앱을 다시 실행한 뒤 시도해 주세요.',
+      );
+    }
     throw new Error(error.message);
   }
   if (!data) {
-    throw new Error('동의 저장 후 프로필을 읽지 못했어요. 잠시 후 다시 시도해 주세요.');
+    // update 0건 → 행이 여전히 없음. insert 한 번 더 시도 후 update
+    const { error: insertError } = await supabase.from('users').insert({
+      id: uid,
+      labeling_data_consent_at: now,
+      updated_at: now,
+    });
+    if (insertError && insertError.code !== '23505') {
+      if (isRlsError(insertError)) {
+        throw new Error(
+          '동의 저장 권한이 없어요. 서버 프로필 생성이 막혀 있어요. 잠시 후 다시 시도해 주세요.',
+        );
+      }
+      throw new Error(insertError.message);
+    }
+    const again = await fetchUserProfile(uid);
+    if (!again?.labeling_data_consent_at) {
+      const second = await supabase
+        .from('users')
+        .update({
+          labeling_data_consent_at: now,
+          updated_at: now,
+        })
+        .eq('id', uid)
+        .select(PROFILE_SELECT)
+        .maybeSingle();
+      if (second.error || !second.data) {
+        throw new Error(
+          second.error?.message ??
+            '동의 저장 후 프로필을 읽지 못했어요. 잠시 후 다시 시도해 주세요.',
+        );
+      }
+      return mapRow(second.data as Record<string, unknown>);
+    }
+    return again;
   }
   return mapRow(data as Record<string, unknown>);
 }
