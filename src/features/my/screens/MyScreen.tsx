@@ -112,6 +112,13 @@ export default function MyScreen() {
       onPress: () => Alert.alert('알림', '준비 중입니다'),
     },
     {
+      id: 'storage',
+      label: '저장 공간',
+      badge: null,
+      visible: true,
+      onPress: () => router.push('/storage'),
+    },
+    {
       id: 'notify',
       label: '알림 설정',
       badge: null,

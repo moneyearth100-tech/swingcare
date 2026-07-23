@@ -1,11 +1,20 @@
 /** 정규화 랜드마크(0~1) → 카메라 뷰 픽셀 좌표 매핑 */
 
-export type CoverAlign = 'start' | 'center' | 'stretch';
+export type CoverAlign =
+  | 'start'
+  | 'center'
+  | 'stretch'
+  | 'contain'
+  | 'android-review';
 
 /**
- * Android thinksys OverlayView LIVE_STREAM은 PreviewView FILL_START와 동일하게
- * cover(max scale) + start 정렬을 쓴다. stretch(x*viewW)로 그리면 좌측으로 치우친다.
+ * Android: PreviewView fillCenter + ExoPlayer cover(ZOOM) 와 같이
+ * cover(max scale) + center. (fillStart/start 는 리뷰 ExoPlayer 중앙 크롭과 어긋남)
  * iOS는 뷰 비율과 맞아 stretch가 잘 맞으므로 기본 stretch 유지.
+ *
+ * 리뷰:
+ * - iOS: VideoView cover + center
+ * - Android: VideoView cover + landmark center (라이브와 동일 배율)
  */
 export function mapNormalizedToView(
   normalizedX: number,
@@ -29,11 +38,23 @@ export function mapNormalizedToView(
     };
   }
 
-  const scale = Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
+  const useContain = align === 'contain';
+  const scale = useContain
+    ? Math.min(viewWidth / imageWidth, viewHeight / imageHeight)
+    : Math.max(viewWidth / imageWidth, viewHeight / imageHeight);
   const displayWidth = imageWidth * scale;
   const displayHeight = imageHeight * scale;
-  const offsetX = align === 'center' ? (viewWidth - displayWidth) / 2 : 0;
-  const offsetY = align === 'center' ? (viewHeight - displayHeight) / 2 : 0;
+  const centerOffsetX = (viewWidth - displayWidth) / 2;
+  const centerOffsetY = (viewHeight - displayHeight) / 2;
+  let offsetX = 0;
+  let offsetY = 0;
+  if (align === 'center' || align === 'contain') {
+    offsetX = centerOffsetX;
+    offsetY = centerOffsetY;
+  } else if (align === 'android-review') {
+    offsetX = centerOffsetX * 0.5;
+    offsetY = centerOffsetY * 0.5;
+  }
 
   return {
     x: normalizedX * displayWidth + offsetX,

@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../auth/hooks/useAuth';
 import { saveLabelingDataConsent } from '../../auth/lib/userProfile';
-import OnboardingLoginScreen from '../../auth/screens/OnboardingLoginScreen';
+import { ensureAnonymousUser } from '../../../services/supabase/client';
 
 type Props = {
   children: ReactNode;
@@ -42,12 +42,20 @@ export default function CaptureConsentGate({ children }: Props) {
       Alert.alert('동의 필요', '영상 활용 목적에 동의해 주세요.');
       return;
     }
-    if (!user?.id) {
-      return;
-    }
     setSaving(true);
     try {
-      await saveLabelingDataConsent(user.id);
+      let userId = user?.id ?? null;
+      if (!userId) {
+        const anon = await ensureAnonymousUser();
+        userId = anon.userId;
+        if (!userId) {
+          throw new Error(
+            anon.errorMessage ?? '로그인을 준비하지 못했어요. 잠시 후 다시 시도해 주세요.',
+          );
+        }
+        await refreshProfile();
+      }
+      await saveLabelingDataConsent(userId);
       await refreshProfile();
     } catch (e) {
       Alert.alert(
@@ -65,10 +73,6 @@ export default function CaptureConsentGate({ children }: Props) {
         <ActivityIndicator color="#8971EA" />
       </View>
     );
-  }
-
-  if (!user) {
-    return <OnboardingLoginScreen />;
   }
 
   if (hasConsent) {

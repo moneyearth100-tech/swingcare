@@ -1,7 +1,7 @@
 /**
  * 스윙 세션 로컬 저장(오프라인 우선) + Supabase 동기화 큐.
- * 로컬에는 LandmarkFrame[] / PhaseMarker[]만 저장한다.
- * 영상은 네이티브 임시 파일에서 Storage로 직접 업로드한다.
+ * 로컬에는 LandmarkFrame[] / PhaseMarker[] + localVideoUri(원본 영상)를 둔다.
+ * Storage 업로드(video_url)는 코칭 요청 시에만 수행한다.
  */
 
 import { Platform } from 'react-native';
@@ -21,6 +21,8 @@ export type SessionSyncStatus = 'pending' | 'synced' | 'error';
 export interface StoredSwingSession extends SwingSession {
   syncStatus: SessionSyncStatus;
   lastSyncError: string | null;
+  /** Documents 등에 보관한 원본 영상 URI. Storage 업로드 전 리뷰용. */
+  localVideoUri?: string | null;
 }
 
 type Listener = () => void;
@@ -188,4 +190,107 @@ export async function syncPendingSwingSessions(): Promise<{
 export async function getLatestStoredSwingSession(): Promise<StoredSwingSession | null> {
   const sessions = await readAll();
   return sessions[0] ?? null;
+}
+
+export async function getStoredSwingSessionById(
+  sessionId: string,
+): Promise<StoredSwingSession | null> {
+  const sessions = await readAll();
+  return sessions.find((s) => s.id === sessionId) ?? null;
+}
+
+/** 로컬 원본 영상 URI를 세션에 연결 (Storage 업로드와 무관) */
+export async function setStoredSwingSessionLocalVideo(
+  sessionId: string,
+  localVideoUri: string,
+): Promise<StoredSwingSession | null> {
+  const sessions = await readAll();
+  const index = sessions.findIndex((s) => s.id === sessionId);
+  if (index < 0) {
+    return null;
+  }
+  const next = [...sessions];
+  next[index] = { ...next[index], localVideoUri };
+  await writeAll(next);
+  return next[index];
+}
+
+/** 로컬 영상 삭제 후 세션의 localVideoUri 만 비움 (리포트·스켈레톤은 유지) */
+export async function clearStoredSwingSessionLocalVideo(
+  sessionId: string,
+): Promise<StoredSwingSession | null> {
+  const sessions = await readAll();
+  const index = sessions.findIndex((s) => s.id === sessionId);
+  if (index < 0) {
+    return null;
+  }
+  const next = [...sessions];
+  next[index] = { ...next[index], localVideoUri: null };
+  await writeAll(next);
+  return next[index];
+}
+
+/** 모든 세션의 localVideoUri 비움 */
+export async function clearAllStoredSwingSessionLocalVideos(): Promise<number> {
+  const sessions = await readAll();
+  let cleared = 0;
+  const next = sessions.map((session) => {
+    if (session.localVideoUri) {
+      cleared += 1;
+      return { ...session, localVideoUri: null };
+    }
+    return session;
+  });
+  if (cleared > 0) {
+    await writeAll(next);
+  }
+  return cleared;
+}
+
+/** 로컬 세션 JSON 제거 (영상·원격은 호출측에서 처리) */
+export async function removeStoredSwingSession(
+  sessionId: string,
+): Promise<boolean> {
+  const sessions = await readAll();
+  const next = sessions.filter((s) => s.id !== sessionId);
+  if (next.length === sessions.length) {
+    return false;
+  }
+  await writeAll(next);
+  return true;
+}
+
+export async function removeStoredSwingSessions(
+  sessionIds: readonly string[],
+): Promise<number> {
+  if (sessionIds.length === 0) {
+    return 0;
+  }
+  const idSet = new Set(sessionIds);
+  const sessions = await readAll();
+  const next = sessions.filter((s) => !idSet.has(s.id));
+  const removed = sessions.length - next.length;
+  if (removed > 0) {
+    await writeAll(next);
+  }
+  return removed;
+}
+
+/**
+ * 갤러리 분석 등 — 이미 원격 동기화된 세션을 로컬 목록에도 남겨
+ * localVideoUri로 리뷰할 수 있게 한다.
+ */
+export async function rememberSyncedSwingSession(input: {
+  session: SwingSession;
+  localVideoUri: string | null;
+}): Promise<StoredSwingSession> {
+  const sessions = await readAll();
+  const stored: StoredSwingSession = {
+    ...input.session,
+    syncStatus: 'synced',
+    lastSyncError: null,
+    localVideoUri: input.localVideoUri,
+  };
+  await writeAll([stored, ...sessions.filter((s) => s.id !== stored.id)]);
+  return stored;
 }

@@ -371,7 +371,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
 
       updateAnalysisProgress({
         percent: 98,
-        status: '영상과 리포트 업로드 중',
+        status: '리포트 저장 중',
       });
       const uploaded = await uploadSwingVideoAndCreateSession({
         localUri: picked.uri,
@@ -386,7 +386,7 @@ export default function SwingUploadPanel({ bottomInset }: Props) {
       if (!uploaded.ok) {
         setAnalysisProgress(null);
         setStatus(null);
-        Alert.alert('업로드 실패', uploaded.message);
+        Alert.alert('분석 저장 실패', uploaded.message);
         return;
       }
 

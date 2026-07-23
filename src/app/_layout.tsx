@@ -4,20 +4,15 @@ import { ActivityIndicator, useColorScheme, View } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AuthProvider, useAuth } from '@/features/auth/hooks/useAuth';
-import OnboardingLoginScreen from '@/features/auth/screens/OnboardingLoginScreen';
-import ProfileSetupScreen from '@/features/auth/screens/ProfileSetupScreen';
 
 SplashScreen.preventAutoHideAsync();
 
 /**
- * 미로그인·프로필 미완료 시 (tabs)/capture(MediaPipe)를 마운트하지 않음.
+ * 소셜/임시 로그인 없이 익명 세션으로 바로 탭 진입.
+ * 프로필 온보딩 강제 없음 — 마이에서 선택 입력.
  */
 function AuthRoot() {
-  const {
-    isLoading,
-    isSocialUser,
-    isProfileComplete,
-  } = useAuth();
+  const { isLoading } = useAuth();
 
   if (isLoading) {
     return (
@@ -25,14 +20,6 @@ function AuthRoot() {
         <ActivityIndicator />
       </View>
     );
-  }
-
-  if (!isSocialUser) {
-    return <OnboardingLoginScreen />;
-  }
-
-  if (!isProfileComplete) {
-    return <ProfileSetupScreen mode="onboarding" />;
   }
 
   return (
@@ -56,6 +43,7 @@ function AuthRoot() {
       <Stack.Screen name="coaching/preview/[requestId]" options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="coaching/select-coach" options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="coaching/requests" options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="storage" options={{ animation: 'slide_from_right' }} />
     </Stack>
   );
 }

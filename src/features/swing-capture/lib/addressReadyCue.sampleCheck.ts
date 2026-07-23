@@ -54,14 +54,15 @@ function assert(cond: boolean, msg: string) {
 function run() {
   const fps = 30;
   const dt = 1000 / fps;
+  /** minWait(2000) + stable(1700) ≈ 3.7s → ~120 frames; 여유 있게 160 */
+  const framesForFire = 160;
 
   // 1) mild jitter should still fire (live noise)
   {
     const d = createAddressReadyDetector({ dominantHand: 'right' });
     let fired = false;
     let fireReason: string | null = null;
-    // minWait(400) + stable(1700) ≈ 2.1s → need >~70 frames @ 30fps
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < framesForFire; i++) {
       const jitter = (i % 2 === 0 ? 1 : -1) * 0.003;
       const r = d.push(addressPose(jitter), i * dt);
       if (r === 'fire') {
@@ -78,9 +79,10 @@ function run() {
   // 2) clear takeaway should skip (needs 2 consecutive high-vel frames)
   {
     const d = createAddressReadyDetector({ dominantHand: 'right' });
-    d.push(addressPose(0), 500);
-    d.push(addressPose(0.08), 500 + dt);
-    const skip = d.push(addressPose(0.16), 500 + 2 * dt);
+    const t0 = ADDRESS_READY_MIN_WAIT_MS + 50;
+    d.push(addressPose(0), t0);
+    d.push(addressPose(0.08), t0 + dt);
+    const skip = d.push(addressPose(0.16), t0 + 2 * dt);
     assert(skip == null, 'takeaway frame should not fire');
     assert(
       d.getPhase() === 'skipped_swing_started',
@@ -95,7 +97,7 @@ function run() {
       stableMs: ADDRESS_READY_STABLE_MS,
     });
     let fireAt: number | null = null;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < framesForFire; i++) {
       const t = i * dt;
       if (d.push(addressPose(0), t) === 'fire') {
         fireAt = t;
@@ -105,14 +107,9 @@ function run() {
     assert(fireAt != null, 'expected fire on still pose');
     const minExpected = ADDRESS_READY_MIN_WAIT_MS + ADDRESS_READY_STABLE_MS;
     // stable timer starts after minWait; fire at earliest ~ minWait + stableMs
-    // (first post-minWait frame starts the timer, so fire ≈ minWait + stable)
     assert(
-      fireAt! >= ADDRESS_READY_STABLE_MS,
-      `fire too early vs stableMs: ${fireAt} < ${ADDRESS_READY_STABLE_MS}`,
-    );
-    assert(
-      fireAt! + dt >= minExpected - ADDRESS_READY_MIN_WAIT_MS,
-      `fire unexpectedly early: ${fireAt}`,
+      fireAt! >= minExpected - dt,
+      `fire too early: ${fireAt} < ~${minExpected}`,
     );
     assert(
       d.getLastFireReason() === 'stable_hold',
@@ -124,7 +121,7 @@ function run() {
   {
     const d = createAddressReadyDetector({ dominantHand: 'right' });
     let fired = false;
-    for (let i = 0; i < 90; i++) {
+    for (let i = 0; i < framesForFire; i++) {
       // ±0.02 @ 30fps → vel ~0.08: above stable EMA (0.045), below takeaway (0.12)
       const jitter = (i % 2 === 0 ? 1 : -1) * 0.02;
       if (d.push(addressPose(jitter), i * dt) === 'fire') {
@@ -143,7 +140,7 @@ function run() {
   {
     const d = createAddressReadyDetector({ dominantHand: 'right' });
     let fired = false;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < framesForFire; i++) {
       const jitter = (i % 2 === 0 ? 1 : -1) * 0.01;
       if (d.push(addressPose(jitter), i * dt) === 'fire') {
         fired = true;
@@ -156,13 +153,14 @@ function run() {
   // 5) swing before stable → skip, no voice path
   {
     const d = createAddressReadyDetector({ dominantHand: 'right' });
-    // brief still (not enough for stable)
+    // minWait 경과 후 짧게만 정지 (stable 홀드 미달)
+    const t0 = ADDRESS_READY_MIN_WAIT_MS;
     for (let i = 0; i < 15; i++) {
-      d.push(addressPose(0), i * dt);
+      d.push(addressPose(0), t0 + i * dt);
     }
     assert(d.getPhase() !== 'ready', 'must not be ready before full hold');
-    d.push(addressPose(0.1), 15 * dt);
-    d.push(addressPose(0.2), 16 * dt);
+    d.push(addressPose(0.1), t0 + 15 * dt);
+    d.push(addressPose(0.2), t0 + 16 * dt);
     assert(
       d.getPhase() === 'skipped_swing_started',
       'takeaway before stable should skip',

@@ -5,6 +5,11 @@
 
 import { getSupabaseClient, isSupabaseConfigured, ensureAnonymousUserId } from './client';
 import { parseDiagnosisText } from '../../features/swing-capture/lib/scoring/diagnosisTemplates';
+import { resolvePlayableLocalVideoUri } from '../../features/swing-capture/lib/localSwingVideo';
+import {
+  getStoredSwingSessionsSnapshot,
+  hydrateSwingSessionStore,
+} from '../../features/swing-capture/store/swingSessionStore';
 import type { SwingReportRow } from './swingReports';
 
 export type ReportFeedItem =
@@ -75,6 +80,19 @@ export async function fetchReportFeed(limit = 30): Promise<ReportFeedItem[]> {
   }
 
   await ensureAnonymousUserId();
+  await hydrateSwingSessionStore();
+  const localVideoBySession = new Map<string, boolean>();
+  for (const stored of getStoredSwingSessionsSnapshot()) {
+    localVideoBySession.set(
+      stored.id,
+      Boolean(resolvePlayableLocalVideoUri(stored.id, stored.localVideoUri)),
+    );
+  }
+  const sessionHasPlayableVideo = (
+    sessionId: string,
+    remoteVideoUrl: string | null | undefined,
+  ): boolean =>
+    Boolean(remoteVideoUrl) || localVideoBySession.get(sessionId) === true;
 
   const { data: pendingSessions, error: pendingError } = await supabase
     .from('swing_sessions')
@@ -121,7 +139,7 @@ export async function fetchReportFeed(limit = 30): Promise<ReportFeedItem[]> {
       sessionId: s.id,
       createdAt: s.created_at,
       status,
-      hasVideo: Boolean(s.video_url),
+      hasVideo: sessionHasPlayableVideo(s.id, s.video_url),
       tag:
         status === 'processing' ? 'UPLOAD · PROCESSING' : 'UPLOAD · PENDING',
       tagColor: '#E5A85D',
@@ -139,7 +157,7 @@ export async function fetchReportFeed(limit = 30): Promise<ReportFeedItem[]> {
       id: `error-${s.id}`,
       sessionId: s.id,
       createdAt: s.created_at,
-      hasVideo: Boolean(s.video_url),
+      hasVideo: sessionHasPlayableVideo(s.id, s.video_url),
       tag: 'UPLOAD · ERROR',
       tagColor: '#E57373',
       title: '분석 실패',
@@ -159,7 +177,15 @@ export async function fetchReportFeed(limit = 30): Promise<ReportFeedItem[]> {
       console.warn('[fetchReportFeed] sessions video', sessionError.message);
     }
     for (const s of sessionRows ?? []) {
-      videoBySession.set(s.id, Boolean(s.video_url));
+      videoBySession.set(
+        s.id,
+        sessionHasPlayableVideo(s.id, s.video_url as string | null),
+      );
+    }
+    for (const id of reportSessionIds) {
+      if (!videoBySession.has(id)) {
+        videoBySession.set(id, sessionHasPlayableVideo(id, null));
+      }
     }
   }
 

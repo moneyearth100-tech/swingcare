@@ -1,10 +1,10 @@
 /**
- * 영상 업로드 → Storage signed URL PUT → swing_sessions(pending).
+ * 영상 업로드 → Storage signed URL PUT → swing_sessions.
  *
  * NOTE:
- *   실시간(live)은 MediaPipe 카메라 세션에서 녹화한 원본을
- *   세션 저장 후 attachVideoToSwingSession 으로 연결한다.
- *   업로드(upload)는 생성 시점에 Storage + video_url 을 둔다.
+ *   실시간(live)·갤러리(upload) 모두 평소에는 로컬 영상만 보관하고
+ *   swing_sessions.video_url 은 null 로 둔다.
+ *   Storage 업로드(attachVideoToSwingSession)는 코칭 요청 시에만 수행한다.
  */
 
 import { File } from 'expo-file-system';
@@ -14,7 +14,9 @@ import type {
   LandmarkFrame,
   PhaseMarker,
 } from '../../features/swing-capture/lib/landmarkTypes';
+import { persistLocalSwingVideo } from '../../features/swing-capture/lib/localSwingVideo';
 import type { BalanceScoreResult } from '../../features/swing-capture/lib/scoring/balanceScore';
+import { rememberSyncedSwingSession } from '../../features/swing-capture/store/swingSessionStore';
 import { enqueueSessionAnalyze } from './analyzeEnqueue';
 import {
   ensureAnonymousUserId,
@@ -29,8 +31,10 @@ export type UploadSwingVideoResult =
   | {
       ok: true;
       sessionId: string;
-      videoUrl: string;
-      storagePath: string;
+      /** 코칭 업로드 전에는 null */
+      videoUrl: string | null;
+      storagePath: string | null;
+      localVideoUri: string;
     }
   | {
       ok: false;
@@ -219,7 +223,8 @@ export async function attachThumbnailToSwingSession(input: {
 }
 
 /**
- * 기존 세션(주로 live)에 코칭용 원본 영상을 붙인다. capture_mode 는 유지.
+ * 기존 세션(주로 live)에 코칭용 원본 영상을 Storage에 올린 뒤 video_url 을 붙인다.
+ * capture_mode 는 유지.
  */
 export async function attachVideoToSwingSession(input: {
   sessionId: string;
@@ -265,8 +270,66 @@ export async function attachVideoToSwingSession(input: {
 }
 
 /**
- * createSignedUploadUrl → PUT(signedUrl) → swing_sessions insert.
- * Android content:// 는 fetch(blob)가 실패하기 쉬워 expo-file-system File.upload 사용.
+ * 코칭 요청 직전: 원격 video_url 이 없으면 로컬 원본을 Storage에 올린다.
+ */
+export async function ensureSwingSessionVideoUploaded(input: {
+  sessionId: string;
+  localUri?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
+}): Promise<
+  | { ok: true; videoUrl: string; uploaded: boolean }
+  | { ok: false; message: string }
+> {
+  if (!isSupabaseConfigured()) {
+    return { ok: false, message: 'Supabase 미설정' };
+  }
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, message: 'Supabase client unavailable' };
+  }
+
+  const { data, error } = await supabase
+    .from('swing_sessions')
+    .select('video_url')
+    .eq('id', input.sessionId)
+    .maybeSingle();
+  if (error) {
+    return { ok: false, message: error.message };
+  }
+  const existing = (data?.video_url as string | null | undefined) ?? null;
+  if (existing) {
+    return { ok: true, videoUrl: existing, uploaded: false };
+  }
+
+  const localUri = input.localUri;
+  if (!localUri) {
+    return { ok: false, message: '코칭용 스윙 영상이 필요해요' };
+  }
+
+  const ext =
+    input.fileName?.includes('.')
+      ? input.fileName.slice(input.fileName.lastIndexOf('.'))
+      : localUri.toLowerCase().includes('.mov')
+        ? '.mov'
+        : '.mp4';
+  const attached = await attachVideoToSwingSession({
+    sessionId: input.sessionId,
+    localUri,
+    fileName: input.fileName ?? `swing_${input.sessionId}${ext}`,
+    mimeType:
+      input.mimeType ??
+      (ext === '.mov' ? 'video/quicktime' : 'video/mp4'),
+  });
+  if (!attached.ok) {
+    return { ok: false, message: attached.message };
+  }
+  return { ok: true, videoUrl: attached.videoUrl, uploaded: true };
+}
+
+/**
+ * 갤러리 영상: 온디바이스 분석 후 세션+리포트만 동기화.
+ * 원본은 로컬 Documents에 보관하고 video_url 은 null (코칭 시 업로드).
  */
 export async function uploadSwingVideoAndCreateSession(input: {
   localUri: string;
@@ -305,19 +368,18 @@ export async function uploadSwingVideoAndCreateSession(input: {
   }
 
   const sessionId = createSessionId();
-  const uploaded = await putLocalVideoToStorage({
-    userId,
+  const persisted = persistLocalSwingVideo({
     sessionId,
-    localUri: input.localUri,
+    sourceUri: input.localUri,
     fileName: input.fileName,
     mimeType: input.mimeType,
   });
-  if (!uploaded.ok) {
-    return {
-      ok: false,
-      reason: uploaded.reason,
-      message: uploaded.message,
-    };
+  const localVideoUri = persisted.ok ? persisted.uri : input.localUri;
+  if (!persisted.ok) {
+    console.warn(
+      '[uploadSwingVideo] local persist failed, using source uri',
+      persisted.message,
+    );
   }
 
   const platform = Platform.OS === 'ios' ? 'ios' : 'android';
@@ -334,7 +396,7 @@ export async function uploadSwingVideoAndCreateSession(input: {
     frames: analysis?.frames ?? [],
     phases: analysis?.phases ?? [],
     capture_mode: 'upload',
-    video_url: uploaded.videoUrl,
+    video_url: null,
     status: analysis ? 'done' : 'pending',
     camera_angle: input.cameraAngle ?? 'unknown',
   });
@@ -373,10 +435,28 @@ export async function uploadSwingVideoAndCreateSession(input: {
     void enqueueSessionAnalyze(sessionId);
   }
 
+  await rememberSyncedSwingSession({
+    session: {
+      id: sessionId,
+      userId,
+      createdAt: new Date().toISOString(),
+      frames: analysis?.frames ?? [],
+      phases: analysis?.phases ?? [],
+      durationMs: Math.max(
+        0,
+        Math.round(analysis?.durationMs ?? input.durationMs),
+      ),
+      deviceInfo: { platform, fps: analysis?.fps ?? 0 },
+      cameraAngle: input.cameraAngle ?? 'unknown',
+    },
+    localVideoUri,
+  });
+
   return {
     ok: true,
     sessionId,
-    videoUrl: uploaded.videoUrl,
-    storagePath: uploaded.storagePath,
+    videoUrl: null,
+    storagePath: null,
+    localVideoUri,
   };
 }

@@ -20,12 +20,14 @@ export interface PackPosePointsOptions {
   viewHeight: number;
   imageWidth: number;
   imageHeight: number;
-  /** 기본: Android start / iOS stretch. 리뷰 cover 영상은 center 권장 */
+  /** 기본: Android center / iOS stretch. 리뷰도 동일(ExoPlayer cover=center). */
   align?: CoverAlign;
 }
 
 /**
- * 표시용 패킹. Android는 cover+start, iOS는 stretch(기존에 맞던 방식).
+ * 표시용 패킹.
+ * Android: PreviewView fillCenter + ExoPlayer ZOOM 과 맞춰 cover+center.
+ * iOS: stretch(기존에 맞던 방식).
  */
 export function packPosePoints(
   landmarks: { x: number; y: number; visibility: number }[],
@@ -35,7 +37,7 @@ export function packPosePoints(
   const count = Math.min(landmarks.length, BLAZEPOSE_LANDMARK_COUNT);
   const align =
     options.align ??
-    (Platform.OS === 'android' ? 'start' : 'stretch');
+    (Platform.OS === 'android' ? 'center' : 'stretch');
 
   for (let i = 0; i < count; i += 1) {
     const point = landmarks[i];

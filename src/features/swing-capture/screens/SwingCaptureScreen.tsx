@@ -59,14 +59,15 @@ import {
 } from '../lib/scoring/balanceScore';
 import { BALANCE_SCORE_JOINTS } from '../lib/scoring/balanceScoreConstants';
 import { matchDiagnosis } from '../lib/scoring/diagnosisTemplates';
+import { persistLocalSwingVideo } from '../lib/localSwingVideo';
 import {
   buildSwingSession,
   saveSwingSessionLocalFirst,
+  setStoredSwingSessionLocalVideo,
   type StoredSwingSession,
 } from '../store/swingSessionStore';
 import type { CaptureSegment } from '../types';
 import { upsertSwingReport } from '../../../services/supabase/swingReports';
-import { attachVideoToSwingSession } from '../../../services/supabase/swingUpload';
 
 /** 탭바 위 녹화 버튼 여백 */
 const RECORD_BUTTON_GAP = 16;
@@ -539,31 +540,45 @@ export default function SwingCaptureScreen() {
 
       setReportSyncStatus('saving');
       setReportSyncError(null);
+      let keptLocalVideo = false;
       void saveSwingSessionLocalFirst(session)
         .then(async (stored) => {
           setLastStoredSession(stored);
+
+          // 원본은 Documents에 보관 — 리뷰/리포트는 로컬 재생, Storage는 코칭 시에만.
+          if (localVideoUri) {
+            const persisted = persistLocalSwingVideo({
+              sessionId: stored.id,
+              sourceUri: localVideoUri,
+              fileName: `live_${stored.id}.mp4`,
+              mimeType: 'video/mp4',
+            });
+            const uriToKeep = persisted.ok ? persisted.uri : localVideoUri;
+            const withVideo = await setStoredSwingSessionLocalVideo(
+              stored.id,
+              uriToKeep,
+            );
+            if (withVideo) {
+              setLastStoredSession(withVideo);
+            }
+            keptLocalVideo = true;
+            if (persisted.ok && persisted.uri !== localVideoUri) {
+              deleteTemporaryVideo(localVideoUri);
+            } else if (!persisted.ok) {
+              setVideoSaveError(persisted.message);
+              console.warn('[live video] local persist failed', persisted.message);
+            } else {
+              setVideoSaveError(null);
+              console.log('[live video] kept local', stored.id);
+            }
+          }
+
           if (stored.syncStatus !== 'synced' || !stored.userId) {
             setReportSyncStatus('error');
             setReportSyncError(
               stored.lastSyncError ?? 'session not synced — report skipped',
             );
             return;
-          }
-
-          if (localVideoUri) {
-            const attached = await attachVideoToSwingSession({
-              sessionId: stored.id,
-              localUri: localVideoUri,
-              fileName: `live_${stored.id}.mp4`,
-              mimeType: 'video/mp4',
-            });
-            if (!attached.ok) {
-              setVideoSaveError(attached.message);
-              console.warn('[live video] upload failed', attached.message);
-            } else {
-              setVideoSaveError(null);
-              console.log('[live video] attached', stored.id);
-            }
           }
 
           const diagnosis = matchDiagnosis(balanceScore, segmentResult.phases, {
@@ -606,7 +621,9 @@ export default function SwingCaptureScreen() {
           setReportSyncError('local save failed');
         })
         .finally(() => {
-          deleteTemporaryVideo(localVideoUri);
+          if (!keptLocalVideo) {
+            deleteTemporaryVideo(localVideoUri);
+          }
           setIsSavingSession(false);
           finalizeInFlightRef.current = false;
         });

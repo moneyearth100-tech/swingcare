@@ -49,7 +49,12 @@ import {
 import {
   fetchSwingSessionVideoMeta,
 } from '../../../services/supabase/swingPlayback';
-import { attachVideoToSwingSession } from '../../../services/supabase/swingUpload';
+import {
+  attachVideoToSwingSession,
+  ensureSwingSessionVideoUploaded,
+} from '../../../services/supabase/swingUpload';
+import { resolvePlayableLocalVideoUri } from '../lib/localSwingVideo';
+import { getStoredSwingSessionById } from '../store/swingSessionStore';
 import SwingVideoThumb from '../components/SwingVideoThumb';
 
 function ReferenceBadge() {
@@ -175,6 +180,7 @@ export default function SwingReportDetailScreen() {
   const [hasPlayableVideo, setHasPlayableVideo] = useState(false);
   const [hasReviewFrames, setHasReviewFrames] = useState(false);
   const [storageVideoUrl, setStorageVideoUrl] = useState<string | null>(null);
+  const [localVideoUri, setLocalVideoUri] = useState<string | null>(null);
   const [storageThumbnailUrl, setStorageThumbnailUrl] = useState<string | null>(
     null,
   );
@@ -196,16 +202,22 @@ export default function SwingReportDetailScreen() {
     }
     setLoading(true);
     setError(null);
-    const [row, media] = await Promise.all([
+    const [row, media, localStored] = await Promise.all([
       fetchSwingReportBySessionId(sessionId),
       fetchSwingSessionVideoMeta(sessionId),
+      getStoredSwingSessionById(sessionId),
     ]);
+    const localUri = resolvePlayableLocalVideoUri(
+      sessionId,
+      localStored?.localVideoUri,
+    );
     if (!row) {
       setError('리포트를 불러오지 못했습니다.');
       setReport(null);
       setHasPlayableVideo(false);
       setHasReviewFrames(false);
       setStorageVideoUrl(null);
+      setLocalVideoUri(null);
       setStorageThumbnailUrl(null);
       setCameraAngle(null);
     } else {
@@ -213,15 +225,18 @@ export default function SwingReportDetailScreen() {
       const path = media?.videoUrl ?? null;
       const thumb = media?.thumbnailUrl ?? null;
       setStorageVideoUrl(path);
+      setLocalVideoUri(localUri);
       setStorageThumbnailUrl(thumb);
-      setHasPlayableVideo(Boolean(path));
-      setHasReviewFrames(Boolean(media?.hasFrames));
+      setHasPlayableVideo(Boolean(path) || Boolean(localUri));
+      setHasReviewFrames(
+        Boolean(media?.hasFrames) || Boolean(localStored?.frames?.length),
+      );
       setCameraAngle(media?.cameraAngle ?? null);
       if (media?.captureMode === 'upload') {
         setVideoLabel('업로드 스윙 영상');
         setVideoMetaLine('탭하여 재생 · 스켈레톤 함께 표시');
       } else if (media?.captureMode === 'live') {
-        if (path) {
+        if (path || localUri) {
           setVideoLabel('실시간 스윙 영상');
           setVideoMetaLine('탭하여 재생 · 스켈레톤 함께 표시');
         } else {
@@ -229,9 +244,9 @@ export default function SwingReportDetailScreen() {
           setVideoMetaLine('탭하여 재생 · 저장된 스켈레톤 표시');
         }
       } else {
-        setVideoLabel(path ? '스윙 영상' : '스윙 스켈레톤');
+        setVideoLabel(path || localUri ? '스윙 영상' : '스윙 스켈레톤');
         setVideoMetaLine(
-          path
+          path || localUri
             ? '탭하여 재생 · 스켈레톤 함께 표시'
             : '탭하여 재생 · 저장된 스켈레톤 표시',
         );
@@ -349,6 +364,7 @@ export default function SwingReportDetailScreen() {
               {hasPlayableVideo ? (
                 <SwingVideoThumb
                   videoUrl={storageVideoUrl}
+                  localVideoUri={localVideoUri}
                   thumbnailUrl={storageThumbnailUrl}
                 />
               ) : (
@@ -537,12 +553,14 @@ export default function SwingReportDetailScreen() {
               void (async () => {
                 setExtracting(true);
                 try {
-                  let ready = hasPlayableVideo;
-                  if (!ready) {
+                  // 코칭 시에만 Storage 업로드. 로컬 원본이 있으면 자동 첨부.
+                  let readyUri = localVideoUri;
+                  if (!storageVideoUrl && !readyUri) {
                     const picked = await pickCoachingVideo();
                     if (!picked) {
                       return;
                     }
+                    readyUri = picked.uri;
                     const attached = await attachVideoToSwingSession({
                       sessionId,
                       localUri: picked.uri,
@@ -555,8 +573,21 @@ export default function SwingReportDetailScreen() {
                     }
                     setHasPlayableVideo(true);
                     setStorageVideoUrl(attached.videoUrl);
+                    setLocalVideoUri(picked.uri);
                     setVideoLabel('실시간 스윙 영상');
-                    ready = true;
+                  } else if (!storageVideoUrl && readyUri) {
+                    const ensured = await ensureSwingSessionVideoUploaded({
+                      sessionId,
+                      localUri: readyUri,
+                      fileName: `swing_${sessionId}.mp4`,
+                      mimeType: 'video/mp4',
+                    });
+                    if (!ensured.ok) {
+                      Alert.alert('영상 업로드 실패', ensured.message);
+                      return;
+                    }
+                    setStorageVideoUrl(ensured.videoUrl);
+                    setHasPlayableVideo(true);
                   }
 
                   const result = await extractCoachingClip(sessionId);
@@ -583,7 +614,8 @@ export default function SwingReportDetailScreen() {
           </Pressable>
           {!hasPlayableVideo ? (
             <Text style={styles.coachHint}>
-              실시간 촬영은 코칭용 스윙 영상을 한 번 선택해요
+              기기에서 원본 영상을 찾을 수 없어요. 코칭용 스윙 영상을 한 번
+              선택해 주세요
               {Platform.OS === 'ios' ? ' (사진 앱)' : ''}
             </Text>
           ) : null}

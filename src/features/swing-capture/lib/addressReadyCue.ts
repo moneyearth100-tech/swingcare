@@ -1,6 +1,6 @@
 /**
  * 게이트 2 — 녹화 중 어드레스 안정 감지 (순수 상태머신).
- * 안정 ~1.7초 연속 + 녹화 시작 후 최소 대기.
+ * 안정 ~1.7초 연속 + 녹화 시작 후 최소 대기(~2초).
  * 이미 테이크어웨이(고속)가 지나갔으면 발화하지 않음.
  *
  * 실시간 MediaPipe 손목 좌표는 오프라인 trim 대비 노이즈가 커서
@@ -24,8 +24,8 @@ import { VELOCITY_REFERENCE_INTERVAL_MS } from './phaseSegmentation';
 /** 어드레스 안정으로 인정할 연속 시간 (게이트 2: ~1.7초) */
 export const ADDRESS_READY_STABLE_MS = 1700;
 
-/** 녹화 시작 후 감지 시작까지 최소 대기 */
-export const ADDRESS_READY_MIN_WAIT_MS = 400;
+/** 녹화 시작 후 포즈 안정화 루틴 시작까지 최소 대기 (버튼 누름→어드레스 잡는 시간) */
+export const ADDRESS_READY_MIN_WAIT_MS = 2000;
 
 /**
  * 라이브 어드레스 안정 속도 상한 (15fps 환산, EMA 적용 후).

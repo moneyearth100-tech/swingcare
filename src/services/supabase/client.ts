@@ -52,24 +52,57 @@ export function getSupabaseClient(): SupabaseClient | null {
   return client;
 }
 
-/** 익명 로그인 보장 후 user id 반환 (미설정/실패 시 null) */
+/** 익명 로그인 보장 후 user id 반환 (미설정/실패 시 null + 원인) */
 export async function ensureAnonymousUserId(): Promise<string | null> {
+  const result = await ensureAnonymousUser();
+  return result.userId;
+}
+
+export type EnsureAnonymousResult = {
+  userId: string | null;
+  errorMessage: string | null;
+};
+
+/**
+ * 익명 로그인. 실패 시 Dashboard 문구만 보여주지 않고 서버 에러를 그대로 남긴다.
+ */
+export async function ensureAnonymousUser(): Promise<EnsureAnonymousResult> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return null;
+    return {
+      userId: null,
+      errorMessage: 'Supabase 미설정 (EXPO_PUBLIC_SUPABASE_URL / ANON_KEY)',
+    };
   }
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (session?.user?.id) {
-    return session.user.id;
-  }
+  try {
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
+    if (sessionError) {
+      console.warn('[supabase] getSession', sessionError.message);
+    }
+    if (session?.user?.id) {
+      return { userId: session.user.id, errorMessage: null };
+    }
 
-  const { data, error } = await supabase.auth.signInAnonymously();
-  if (error || !data.user?.id) {
-    console.warn('[supabase] anonymous sign-in failed', error?.message);
-    return null;
+    const { data, error } = await supabase.auth.signInAnonymously();
+    if (error) {
+      console.warn('[supabase] anonymous sign-in failed', error.message, error);
+      return { userId: null, errorMessage: error.message };
+    }
+    if (!data.user?.id) {
+      return {
+        userId: null,
+        errorMessage: '익명 로그인 응답에 user가 없습니다.',
+      };
+    }
+    return { userId: data.user.id, errorMessage: null };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : '익명 로그인 중 예외가 발생했습니다.';
+    console.warn('[supabase] anonymous sign-in exception', message);
+    return { userId: null, errorMessage: message };
   }
-  return data.user.id;
 }

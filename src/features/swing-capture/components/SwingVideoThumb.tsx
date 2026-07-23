@@ -1,8 +1,8 @@
 /**
  * 스윙 썸네일 + 중앙 재생 버튼.
- * - videoUrl: expo-video 정지 프레임
+ * - localVideoUri: 기기 로컬 파일 (우선)
+ * - videoUrl: Storage 상대경로 → signed URL / 또는 로컬 URI
  * - thumbnailUrl: 저장된 JPEG (있을 때)
- * 스켈레톤 프리뷰 없음. view-shot 등 추가 네이티브 모듈 미사용.
  */
 
 import { Image } from 'expo-image';
@@ -10,11 +10,14 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
+import { isLocalVideoUri } from '../lib/localSwingVideo';
 import { createSwingVideoSignedUrl } from '../../../services/supabase/swingPlayback';
 
 type Props = {
-  /** Storage 상대경로 (예: swing-uploads/…/id.mp4) */
+  /** Storage 상대경로 (예: swing-uploads/…/id.mp4) 또는 로컬 URI */
   videoUrl: string | null;
+  /** 기기 로컬 원본 — Storage보다 우선 */
+  localVideoUri?: string | null;
   /** Storage 상대경로 (예: swing-uploads/…/id_thumb.jpg) */
   thumbnailUrl?: string | null;
 };
@@ -24,6 +27,7 @@ const THUMB_H = 96;
 
 export default function SwingVideoThumb({
   videoUrl,
+  localVideoUri,
   thumbnailUrl,
 }: Props) {
   const [thumbImageUri, setThumbImageUri] = useState<string | null>(null);
@@ -52,7 +56,19 @@ export default function SwingVideoThumb({
             return;
           }
         }
+        if (localVideoUri && isLocalVideoUri(localVideoUri)) {
+          if (!cancelled) {
+            setSignedVideoUrl(localVideoUri);
+          }
+          return;
+        }
         if (videoUrl) {
+          if (isLocalVideoUri(videoUrl)) {
+            if (!cancelled) {
+              setSignedVideoUrl(videoUrl);
+            }
+            return;
+          }
           const signed = await createSwingVideoSignedUrl(videoUrl);
           if (!cancelled && signed) {
             setSignedVideoUrl(signed);
@@ -71,7 +87,7 @@ export default function SwingVideoThumb({
     return () => {
       cancelled = true;
     };
-  }, [videoUrl, thumbnailUrl]);
+  }, [videoUrl, localVideoUri, thumbnailUrl]);
 
   useEffect(() => {
     if (!signedVideoUrl || !player || thumbImageUri) {

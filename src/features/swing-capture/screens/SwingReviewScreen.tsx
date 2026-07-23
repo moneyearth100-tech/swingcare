@@ -90,9 +90,11 @@ function reviewSkeletonOffsetMs(isLiveCapture: boolean): number {
       : 0;
 }
 
-/** 리뷰 VideoView contentFit=cover 와 맞출 카메라 프레임 비율 (세로) */
-const REVIEW_FRAME_WIDTH = 1080;
-const REVIEW_FRAME_HEIGHT = 1920;
+/** 리뷰 VideoView 매핑용 프레임 비율 — Android 분석/카메라는 4:3(세로 3:4) */
+const REVIEW_FRAME_WIDTH_IOS = 1080;
+const REVIEW_FRAME_HEIGHT_IOS = 1920;
+const REVIEW_FRAME_WIDTH_ANDROID = 1080;
+const REVIEW_FRAME_HEIGHT_ANDROID = 1440;
 
 function clampRate(value: number): number {
   return Math.min(RATE_MAX, Math.max(RATE_MIN, value));
@@ -401,12 +403,19 @@ export default function SwingReviewScreen() {
       const landmarks = mirrorSkeleton
         ? pose.map((point) => ({ ...point, x: 1 - point.x }))
         : pose;
-      // 한 번에 pointsSV 할당 — Skia는 UI 스레드에서 SharedValue 읽음
+      // Android: 라이브 fillCenter + ExoPlayer cover(ZOOM) = cover+center
+      // iOS: cover+center (기존)
       pointsSV.value = packPosePoints(landmarks, {
         viewWidth: layout.width,
         viewHeight: layout.height,
-        imageWidth: REVIEW_FRAME_WIDTH,
-        imageHeight: REVIEW_FRAME_HEIGHT,
+        imageWidth:
+          Platform.OS === 'android'
+            ? REVIEW_FRAME_WIDTH_ANDROID
+            : REVIEW_FRAME_WIDTH_IOS,
+        imageHeight:
+          Platform.OS === 'android'
+            ? REVIEW_FRAME_HEIGHT_ANDROID
+            : REVIEW_FRAME_HEIGHT_IOS,
         align: 'center',
       });
     },
@@ -667,7 +676,21 @@ export default function SwingReviewScreen() {
         skeletonTimeMsRef.current = firstTs;
         latestMediaTimeMsRef.current = firstTs;
 
-        if (session.videoUrl) {
+        if (session.localVideoUri) {
+          if (cancelled) {
+            return;
+          }
+          setSignedUrl(session.localVideoUri);
+          setSkeletonOnly(false);
+          setMirrorSkeleton(session.captureMode === 'live');
+          if (session.frames.length === 0) {
+            setHint('좌표 프레임이 없어 영상만 재생해요');
+          } else if (resolvedPhases.length === 0) {
+            setHint('구간(어드레스~피니시) 정보가 없어요');
+          } else {
+            setHint(null);
+          }
+        } else if (session.videoUrl) {
           const url = await createSwingVideoSignedUrl(session.videoUrl);
           if (cancelled) {
             return;

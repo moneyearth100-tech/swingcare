@@ -7,6 +7,10 @@ import type {
   PhaseMarker,
   PoseLandmarks,
 } from '../../features/swing-capture/lib/landmarkTypes';
+import {
+  getStoredSwingSessionById,
+} from '../../features/swing-capture/store/swingSessionStore';
+import { resolvePlayableLocalVideoUri } from '../../features/swing-capture/lib/localSwingVideo';
 
 import { getSupabaseClient, isSupabaseConfigured } from './client';
 
@@ -17,6 +21,8 @@ export type SwingPlaybackSession = {
   status: string;
   captureMode: 'live' | 'upload' | string | null;
   videoUrl: string | null;
+  /** 기기 Documents 등 — Storage 서명 URL보다 우선 */
+  localVideoUri: string | null;
   frames: LandmarkFrame[];
   phases: PhaseMarker[];
   durationMs: number;
@@ -84,7 +90,7 @@ export async function fetchSwingSessionVideoMeta(
 
   let { data, error } = await supabase
     .from('swing_sessions')
-    .select('video_url, thumbnail_url, capture_mode, status, camera_angle')
+    .select('video_url, thumbnail_url, capture_mode, status, camera_angle, fps')
     .eq('id', sessionId)
     .maybeSingle();
 
@@ -93,7 +99,7 @@ export async function fetchSwingSessionVideoMeta(
   if (error?.code === '42703' || error?.message.includes('thumbnail_url')) {
     const legacyResult = await supabase
       .from('swing_sessions')
-      .select('video_url, capture_mode, status, camera_angle')
+      .select('video_url, capture_mode, status, camera_angle, fps')
       .eq('id', sessionId)
       .maybeSingle();
     data = legacyResult.data
@@ -108,7 +114,7 @@ export async function fetchSwingSessionVideoMeta(
   ) {
     const noAngle = await supabase
       .from('swing_sessions')
-      .select('video_url, thumbnail_url, capture_mode, status')
+      .select('video_url, thumbnail_url, capture_mode, status, fps')
       .eq('id', sessionId)
       .maybeSingle();
     data = noAngle.data
@@ -127,7 +133,10 @@ export async function fetchSwingSessionVideoMeta(
   const videoUrl = data.video_url ?? null;
   const thumbnailUrl = data.thumbnail_url ?? null;
   const captureMode = data.capture_mode ?? null;
-  const hasFrames = Boolean(videoUrl) || captureMode === 'live';
+  // 로컬 원본만 있는 세션도 리뷰 가능 — fps/live로 프레임 존재 추정
+  const fps = Number((data as { fps?: number }).fps) || 0;
+  const hasFrames =
+    Boolean(videoUrl) || captureMode === 'live' || fps > 0;
   const rawAngle = (data as { camera_angle?: string | null }).camera_angle;
   const cameraAngle =
     rawAngle === 'front' || rawAngle === 'side' || rawAngle === 'unknown'
@@ -147,8 +156,27 @@ export async function fetchSwingSessionVideoMeta(
 export async function fetchSwingPlaybackSession(
   sessionId: string,
 ): Promise<SwingPlaybackSession | null> {
+  const localStored = await getStoredSwingSessionById(sessionId);
+  const localVideoUri = resolvePlayableLocalVideoUri(
+    sessionId,
+    localStored?.localVideoUri,
+  );
+
   if (!isSupabaseConfigured()) {
-    return null;
+    if (!localStored) {
+      return null;
+    }
+    return {
+      id: localStored.id,
+      status: 'done',
+      captureMode: 'live',
+      videoUrl: null,
+      localVideoUri,
+      frames: localStored.frames,
+      phases: localStored.phases,
+      durationMs: localStored.durationMs,
+      fps: localStored.deviceInfo.fps,
+    };
   }
   const supabase = getSupabaseClient();
   if (!supabase) {
@@ -167,6 +195,19 @@ export async function fetchSwingPlaybackSession(
     if (error) {
       console.warn('[fetchSwingPlaybackSession]', error.message);
     }
+    if (localStored) {
+      return {
+        id: localStored.id,
+        status: 'done',
+        captureMode: 'live',
+        videoUrl: null,
+        localVideoUri,
+        frames: localStored.frames,
+        phases: localStored.phases,
+        durationMs: localStored.durationMs,
+        fps: localStored.deviceInfo.fps,
+      };
+    }
     return null;
   }
 
@@ -182,6 +223,7 @@ export async function fetchSwingPlaybackSession(
     status: data.status,
     captureMode: data.capture_mode ?? null,
     videoUrl: data.video_url ?? null,
+    localVideoUri,
     frames: Array.isArray(data.frames) ? (data.frames as LandmarkFrame[]) : [],
     phases: verified.length > 0 ? verified : autoPhases,
     durationMs: Number(data.duration_ms) || 0,
