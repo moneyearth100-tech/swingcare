@@ -177,6 +177,7 @@ export default function SwingCaptureScreen() {
     phase: addressReadyPhase,
     voiceEnabled: addressReadyVoiceEnabled,
     speechAvailable: addressReadySpeechAvailable,
+    readyAtTimestampMs: addressReadyAtMs,
     setVoiceEnabled: setAddressReadyVoiceEnabled,
     silenceSpeech: silenceAddressReadySpeech,
     onRecordingFrame: onAddressReadyFrame,
@@ -184,6 +185,8 @@ export default function SwingCaptureScreen() {
     dominantHand,
     isRecording,
   });
+  const addressReadyAtMsRef = useRef(addressReadyAtMs);
+  addressReadyAtMsRef.current = addressReadyAtMs;
 
   /**
    * 게이트 3 자동정지 → 수동 종료와 동일 저장 파이프라인.
@@ -498,6 +501,7 @@ export default function SwingCaptureScreen() {
 
       const trimResult = trimSwingWindow(result.frames, {
         dominantHand,
+        addressReadyMs: addressReadyAtMsRef.current,
         logTag: '[trimSwingWindow][live]',
       });
       const analysisFrames = trimResult.frames;

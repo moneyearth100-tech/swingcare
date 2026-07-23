@@ -107,6 +107,11 @@ export interface UseAddressReadyCueResult {
   voiceEnabled: boolean;
   /** 네이티브 TTS 또는 iOS 에셋 큐 사용 가능 여부 */
   speechAvailable: boolean;
+  /**
+   * Gate 2 발화(또는 skip 직전 안정) 프레임 timestampMs.
+   * trim 윈도우 시작용. 미발화면 null.
+   */
+  readyAtTimestampMs: number | null;
   setVoiceEnabled: (enabled: boolean) => void;
   /** isRecording effect가 담당. 수동 호출은 동일하게 새 디텍터 arm */
   resetForRecording: () => void;
@@ -126,6 +131,9 @@ export function useAddressReadyCue(options: {
   const [phase, setPhase] = useState<AddressReadyPhase>('idle');
   const [voiceEnabled, setVoiceEnabledState] = useState(true);
   const [speechAvailable, setSpeechAvailable] = useState(false);
+  const [readyAtTimestampMs, setReadyAtTimestampMs] = useState<number | null>(
+    null,
+  );
   const voiceEnabledRef = useRef(true);
   const speechRef = useRef<SpeechApi | null>(null);
   const iosAudioAvailableRef = useRef(false);
@@ -143,6 +151,7 @@ export function useAddressReadyCue(options: {
   /** 프레임 유입 카운트 (스로틀 로그) */
   const frameCountRef = useRef(0);
   const lastFrameLogAtRef = useRef(0);
+  const readyAtTimestampMsRef = useRef<number | null>(null);
   dominantHandRef.current = dominantHand;
   isRecordingRef.current = isRecording;
 
@@ -497,6 +506,8 @@ export function useAddressReadyCue(options: {
     cueGenerationRef.current += 1;
     frameCountRef.current = 0;
     lastFrameLogAtRef.current = 0;
+    readyAtTimestampMsRef.current = null;
+    setReadyAtTimestampMs(null);
     // arm 시 stop() 호출 금지 (이전 세션 늦은 stop 회귀)
     // 단 iOS 에셋 플레이어는 세대 무효화만 — 새 세션 전 잔여 재생 차단
     if (Platform.OS === 'ios') {
@@ -525,7 +536,9 @@ export function useAddressReadyCue(options: {
     frameCountRef.current = 0;
     setPhase('idle');
     stopIfSpeakingNow();
-    console.log('[addressReadyCue] disarmed');
+    console.log('[addressReadyCue] disarmed', {
+      readyAtTimestampMs: readyAtTimestampMsRef.current,
+    });
   }, [stopIfSpeakingNow]);
 
   const resetForRecording = armForRecording;
@@ -601,6 +614,8 @@ export function useAddressReadyCue(options: {
       }
 
       const fireReason = detector.getLastFireReason() ?? 'stable_hold';
+      readyAtTimestampMsRef.current = timestampMs;
+      setReadyAtTimestampMs(timestampMs);
       console.log('[addressReadyCue] fire → haptic + speak', {
         fireReason,
         timestampMs,
@@ -622,6 +637,7 @@ export function useAddressReadyCue(options: {
     phase,
     voiceEnabled,
     speechAvailable,
+    readyAtTimestampMs,
     setVoiceEnabled,
     resetForRecording,
     silenceSpeech,

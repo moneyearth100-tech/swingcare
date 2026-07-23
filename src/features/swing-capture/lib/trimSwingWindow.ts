@@ -33,11 +33,15 @@ export const ADDRESS_STABLE_MS = 500;
  */
 export const ADDRESS_HOLD_MS = 450;
 
-/** 안정 판정 손목/엉덩이 속도 상한 (15fps 환산) */
-export const ADDRESS_STABLE_VELOCITY = 0.018;
+/**
+ * 안정 판정 손목/엉덩이 속도 상한 (15fps 환산).
+ * 라이브 MediaPipe 지터를 감안해 이전 0.018보다 완화 — Gate2와 맞추되
+ * ADDRESS_READY(0.045)보다는 약간 타이트.
+ */
+export const ADDRESS_STABLE_VELOCITY = 0.032;
 
 /** 테이크어웨이(움직임 시작)로 볼 속도 */
-export const TAKEAWAY_VELOCITY = 0.045;
+export const TAKEAWAY_VELOCITY = 0.055;
 
 /** 피니시 이후 버퍼에 남길 여유 */
 export const FINISH_PAD_MS = 220;
@@ -49,6 +53,11 @@ export interface TrimSwingWindowOptions {
   dominantHand?: DominantHand | null;
   trailWristIndex?: number;
   finishPadMs?: number;
+  /**
+   * Gate 2 「준비됐습니다」 발화 시점(원본 timestampMs).
+   * 있으면 이 시각의 프레임을 윈도우 시작으로 쓴다 — 녹화 버튼~안내 구간을 자른다.
+   */
+  addressReadyMs?: number | null;
   /** console 로그 태그. 기본 '[trimSwingWindow]' */
   logTag?: string;
   /** false면 로그 생략 (테스트용) */
@@ -76,6 +85,23 @@ function clampIndex(index: number, length: number): number {
     return 0;
   }
   return Math.max(0, Math.min(length - 1, index));
+}
+
+/** addressReadyMs 이상인 첫 프레임. 없으면 null */
+function findFrameIndexAtOrAfterMs(
+  frames: readonly LandmarkFrame[],
+  ms: number | null | undefined,
+): number | null {
+  if (ms == null || !Number.isFinite(ms) || frames.length === 0) {
+    return null;
+  }
+  for (let i = 0; i < frames.length; i += 1) {
+    if (frames[i].timestampMs >= ms) {
+      return i;
+    }
+  }
+  // 모든 프레임이 cue 이전이면 마지막 — finish와 겹치면 이후 검증에서 폴백
+  return frames.length - 1;
 }
 
 function wristPoint(
@@ -420,6 +446,9 @@ export function trimSwingWindow(
       : DEFAULT_TRAIL_WRIST_INDEX);
   const finishPadMs = options.finishPadMs ?? FINISH_PAD_MS;
 
+  let addressFromCue: number | null = null;
+  let addressFromPose: number | null = null;
+
   const logResult = (result: TrimSwingWindowResult) => {
     if (!shouldLog) {
       return;
@@ -434,6 +463,13 @@ export function trimSwingWindow(
       fallback: result.fallback,
       warning: result.warning,
       trailWristIndex,
+      addressReadyMs: options.addressReadyMs ?? null,
+      addressSource:
+        addressFromCue != null
+          ? 'gate2_cue'
+          : addressFromPose != null
+            ? 'pose_stable'
+            : 'none',
       // fallback=true 이면 녹화/정지 버튼 앞뒤가 안 잘림 (address·finish 미감지 등)
       hint: result.fallback
         ? 'trim skipped — check warning (address/finish). Full buffer kept.'
@@ -450,7 +486,13 @@ export function trimSwingWindow(
   const totalStartMs = frames[0].timestampMs;
   const totalEndMs = frames[frames.length - 1].timestampMs;
 
-  const addressIndex = findAddressStableIndex(frames, trailWristIndex);
+  addressFromCue = findFrameIndexAtOrAfterMs(
+    frames,
+    options.addressReadyMs ?? null,
+  );
+  addressFromPose = findAddressStableIndex(frames, trailWristIndex);
+  // Gate 2 안내 시점이 있으면 그걸 시작으로 — 재생이 「준비됐습니다」부터
+  const addressIndex = addressFromCue ?? addressFromPose;
   if (addressIndex == null) {
     const fb = emptyFallback(
       frames,

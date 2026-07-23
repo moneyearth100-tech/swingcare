@@ -7,8 +7,8 @@
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_ENABLE_DEV_TEMP_LOGIN": "true",
-        "EXPO_PUBLIC_SUPABASE_URL": "https://mlnudajkqevslipwdryg.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1sbnVkYWprcWV2c2xpcHdkcnlnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3NTI4NTQsImV4cCI6MjA5OTMyODg1NH0.LeQqji_5e2K_zSiDAzTOu5XWa079GX9xhOAiyfOwmmo"
+        "EXPO_PUBLIC_SUPABASE_URL": "https://efvgfdnplvuvoxefpfaz.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmdmdmZG5wbHZ1dm94ZWZwZmF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3Mzg4OTIsImV4cCI6MjEwMDMxNDg5Mn0.C7P-WcRamN1QyP9Ozs2L6YdnKVk4aCzQpizuXoTDvIg"
       },
       "android": {
         "buildType": "apk"

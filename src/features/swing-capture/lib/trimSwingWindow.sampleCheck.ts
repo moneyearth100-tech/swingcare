@@ -107,11 +107,33 @@ function main(): void {
   assert(result.trimmedTailMs >= 200, `tail trim too small: ${result.trimmedTailMs}`);
   assert(result.frames[0].timestampMs > 0, 'keeps original timestamps (not rebased to 0)');
 
+  // Gate 2 cue at ~900ms — 윈도우가 그 근처부터 시작해야 함
+  const cueMs = 900;
+  const cued = trimSwingWindow(frames, {
+    log: false,
+    addressReadyMs: cueMs,
+  });
+  assert(!cued.fallback, `cue trim failed: ${cued.warning}`);
+  assert(
+    cued.frames[0].timestampMs >= cueMs - 40,
+    `cue start too early: ${cued.frames[0].timestampMs}`,
+  );
+  assert(
+    cued.frames[0].timestampMs <= cueMs + 80,
+    `cue start too late: ${cued.frames[0].timestampMs}`,
+  );
+  assert(
+    cued.trimmedHeadMs >= 800,
+    `cue should trim record→ready head: ${cued.trimmedHeadMs}`,
+  );
+
   console.log('[trimSwingWindow.sampleCheck] ok', {
     before: result.beforeFrameCount,
     after: result.afterFrameCount,
     headMs: result.trimmedHeadMs,
     tailMs: result.trimmedTailMs,
+    cueStartMs: cued.frames[0].timestampMs,
+    cueHeadMs: cued.trimmedHeadMs,
   });
 }
 
